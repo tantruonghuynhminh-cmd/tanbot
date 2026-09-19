@@ -228,50 +228,37 @@ function canAmend(id, ms) {
 } 
 
 async function okxApiRequest(endpoint, method = 'GET', body = null) {
-  // 1. Fix lỗi 50103: Đảm bảo lấy key từ localStorage nếu biến toàn cục bị trống
-  const curKey = apiKey || localStorage.getItem('okx_api_key');
-  const curSecret = secretKey || localStorage.getItem('okx_secret_key');
-  const curPass = passphrase || localStorage.getItem('okx_passphrase');
-
-  if (!curKey || !curSecret || !curPass) {
-    console.warn("Chưa có API Key, bỏ qua request:", endpoint);
-    return null;
-  }
-
-  const ts = new Date().toISOString();
   const methodUpper = method.toUpperCase();
-
-  // 2. Fix logic Endpoint: Đảm bảo path chuẩn để tạo chữ ký đúng
+  
+  // Chuẩn hóa path endpoint (ví dụ: /account/balance -> /api/v5/account/balance)
   const fullEndpoint = endpoint.startsWith('/api/v5') ? endpoint : '/api/v5' + endpoint;
 
-  // 3. Xử lý Body: OKX quy định GET body luôn là chuỗi rỗng khi tạo chữ ký
-  const bodyStr = (methodUpper === 'GET' || !body) ? '' : JSON.stringify(body);
-
-  // 4. Tạo chữ ký (Sign): Quan trọng nhất là msg phải khớp hoàn toàn với request
-  const msg = ts + methodUpper + fullEndpoint + bodyStr;
-  const sign = CryptoJS.enc.Base64.stringify(
-    CryptoJS.HmacSHA256(msg, curSecret)
-  );
+  // Nếu là gọi số dư tài khoản, đổi hướng sang endpoint riêng tư trên server
+  let proxyUrl = '/api/okx/ticker';
+  if (fullEndpoint.includes('/account/balance')) {
+    proxyUrl = '/api/okx/balance';
+  } else if (fullEndpoint.includes('/trade/order')) {
+    proxyUrl = '/api/okx/order';
+  }
 
   try {
-    // Lưu ý: Endpoint truyền vào fetch phải bao gồm cả query string (nếu có)
-    const res = await fetch('https://www.okx.com' + fullEndpoint, {
+    const options = {
       method: methodUpper,
       headers: {
-        'OK-ACCESS-KEY': curKey,
-        'OK-ACCESS-SIGN': sign,
-        'OK-ACCESS-TIMESTAMP': ts,
-        'OK-ACCESS-PASSPHRASE': curPass,
         'Content-Type': 'application/json'
-      },
-      body: methodUpper === 'GET' ? null : bodyStr
-    });
+      }
+    };
 
+    if (methodUpper !== 'GET' && body) {
+      options.body = JSON.stringify(body);
+    }
+
+    // Gọi về Backend Server của bạn (Render), không gửi trực tiếp sang OKX
+    const res = await fetch(proxyUrl, options);
     const data = await res.json();
 
-    // 🔎 DEBUG: In lỗi cụ thể từ sàn (ví dụ lỗi 51000 ordType)
     if (!res.ok || (data && data.code !== "0")) {
-      console.warn('OKX API ERROR:', data.code, data.msg, 'Path:', fullEndpoint);
+      console.warn('OKX API ERROR:', data?.code, data?.msg || data?.error, 'Path:', fullEndpoint);
     }
 
     return data;
@@ -895,14 +882,14 @@ const pool = (qualityCandidates || [])
             const qPrec = info.lotSz.includes('.') ? info.lotSz.split('.')[1].length : 0;
             const pPrec = info.tickSz.includes('.') ? info.tickSz.split('.')[1].length : 0;
 
-            // 3️⃣ VÒNG LẶP HẠ ĐÒN BẨY VÀ TÍNH QTY CHUẨN ĐỊNH DẠNG (BỎ ".00")
+           // 3️⃣ VÒNG LẶP HẠ ĐÒN BẨY VÀ TÍNH QTY CHUẨN ĐỊNH DẠNG (BỎ ".00")
             let currentLeverage = parseInt(document.getElementById('leverage')?.value || 10);
-            if (isNaN(currentLeverage) || currentLeverage < 1) currentLeverage = 10;
+            if (isNaN(currentLeverage) || currentLeverage < 10) currentLeverage = 10;
             
             let finalQty = "";
             let leverageFixed = false;
 
-            while (currentLeverage >= 1) {
+            while (currentLeverage >= 10) {
               const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
                 instId: p.instId,
                 lever: currentLeverage.toString(),
@@ -911,14 +898,13 @@ const pool = (qualityCandidates || [])
 
               if (levRes?.code === '0' || levRes?.code === '32115') {
                 let rawQty = (fixedMarginPerOrder * currentLeverage) / (p.last * ctVal);
-                if (rawQty < minSz) {
+
+                let qty = Math.floor(rawQty / lotSz) * lotSz;
+                if (qty < minSz) {
                   log(`⚠️ Bỏ qua ${p.instId}: Đòn bẩy ${currentLeverage}x khiến vốn không đủ mua mức tối thiểu sàn.`);
                   leverageFixed = false;
                   break;
                 }
-
-                let qty = Math.floor(rawQty / lotSz) * lotSz;
-                qty = Math.max(qty, minSz);
                 
                 // FIX CHÍ MẠNG 51000: Ép chuỗi chuẩn không thừa chữ số thập phân vô nghĩa
                 finalQty = qPrec > 0 ? qty.toFixed(qPrec) : String(Math.round(qty));
@@ -930,11 +916,10 @@ const pool = (qualityCandidates || [])
               } 
               else if (levRes?.code === '59102') {
                 log(`🔄 ${p.instId} đòn bẩy sàn thấp hơn ${currentLeverage}x. Đang hạ bậc...`);
-                if (currentLeverage > 10) currentLeverage = 10;
-                else if (currentLeverage > 5) currentLeverage = 5;
-                else if (currentLeverage > 3) currentLeverage = 3;
-                else if (currentLeverage > 2) currentLeverage = 2;
-                else if (currentLeverage > 1) currentLeverage = 1;
+                if (currentLeverage > 50) currentLeverage = 50;
+                else if (currentLeverage > 30) currentLeverage = 30;
+                else if (currentLeverage > 20) currentLeverage = 20;
+                else if (currentLeverage > 10) currentLeverage = 10;
                 else break;
               } 
               else {
