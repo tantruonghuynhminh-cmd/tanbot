@@ -46,14 +46,6 @@ th{color:var(--muted);font-weight:600}
     <div id="symbolsCount" class="small" style="margin-left:8px;color:var(--muted)">Số cặp: -</div>
     <div class="countdown small" id="countdown">Next in: 05:00</div>
   </div>
-  <div id="scanProgressWrap" style="display:block;margin:8px 0 12px;padding:8px 10px;border:1px solid #263244;border-radius:8px;background:#0b1018">
-    <div style="display:flex;justify-content:space-between;gap:12px;font-size:12px;color:#aab7c7">
-      <span id="scanProgressText">Sẵn sàng quét</span><span id="scanProgressPct">0%</span>
-    </div>
-    <div style="height:7px;margin-top:6px;background:#202938;border-radius:999px;overflow:hidden">
-      <div id="scanProgress" style="width:0%;height:100%;background:#20c997;transition:width .2s ease"></div>
-    </div>
-  </div>
 
   <div class="trade-config">
     <div class="config-group">
@@ -62,7 +54,7 @@ th{color:var(--muted);font-weight:600}
     </div>
     <div class="config-group">
       <span class="config-label">Đòn bẩy:</span>
-      <input type="number" id="leverage" class="config-input" value="50">
+      <input type="number" id="leverage" class="config-input" value="20">
     </div>
     <div class="config-group">
       <span class="config-label">Kích thước lệnh tối đa (USDT):</span>
@@ -131,7 +123,7 @@ const OKX_TICKERS = 'https://www.okx.com/api/v5/market/tickers?instType=SWAP';
 let positions = {};
 let topPump = [];
 let topDump = [];
-let isClosingAll = false;
+
 
 // SỬA LỖI KHAI BÁO TRÙNG TẠI ĐÂY
 let activeOrders = JSON.parse(localStorage.getItem('okx_active_orders')) || {};
@@ -155,73 +147,20 @@ function updateSymbolsCount(done, total) {
   if (el) el.textContent = `Số cặp: ${done}/${total}`;
 }
 
-// ================= TELEGRAM ANTI-429 =================
-let telegramQueue = [];
-let telegramSending = false;
-
 async function sendTelegram(message) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID || !message) return;
-
-    // Không xếp cùng một message liên tiếp
-    if (telegramQueue[telegramQueue.length - 1] === message) return;
-
-    telegramQueue.push(message);
-
-    // Giới hạn queue, tránh BOT spam hàng trăm thông báo
-    if (telegramQueue.length > 20) {
-        telegramQueue.shift();
-    }
-
-    if (telegramSending) return;
-
-    telegramSending = true;
-
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
     try {
-        while (telegramQueue.length > 0) {
-            const msg = telegramQueue.shift();
-
-            const url =
-                `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-
-            try {
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        chat_id: TELEGRAM_CHAT_ID,
-                        text: msg,
-                        parse_mode: 'HTML'
-                    })
-                });
-
-                // Telegram yêu cầu chờ khi bị rate-limit
-                if (res.status === 429) {
-                    const data = await res.json().catch(() => null);
-                    const retryAfter = data?.parameters?.retry_after || 3;
-
-                    console.warn(
-                        `⚠️ Telegram 429 → chờ ${retryAfter}s`
-                    );
-
-                    await new Promise(r =>
-                        setTimeout(r, retryAfter * 1000)
-                    );
-
-                    // Gửi lại message vừa bị giới hạn
-                    telegramQueue.unshift(msg);
-                    continue;
-                }
-
-            } catch (err) {
-                console.warn("⚠️ Telegram network error:", err.message);
-            }
-
-            // Khoảng nghỉ giữa các message
-            await new Promise(r => setTimeout(r, 1200));
-        }
-
-    } finally {
-        telegramSending = false;
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'HTML' })
+        });
+        
+        // Bỏ qua lỗi 429 nếu gửi quá nhanh để không làm tràn Console
+        if (res.status === 429) return;
+    } catch (e) {
+        // Nuốt lỗi kết nối/mạng nhẹ để giữ Console sạch bóng
     }
 }
 
@@ -449,106 +388,64 @@ const ATR_CACHE_TTL = 5 * 60 * 1000; // Giảm xuống 5 phút để cập nhậ
 async function fetchATR_Price1h(instId) {
   try {
     const now = Date.now();
+
+    // CACHE
     const cached = atrCache[instId];
-    if (cached && now - cached.ts < ATR_CACHE_TTL) return cached.data;
-
-    let resCandles = null;
-    let j = null;
-    for (let attempt = 0; attempt <= 2; attempt++) {
-      resCandles = await fetch(
-        `${OKX_API_BASE}/market/history-candles?instId=${instId}&bar=1H&limit=30`,
-        { cache: 'no-store' }
-      );
-      if (resCandles.status !== 429) break;
-      if (attempt < 2) {
-        console.warn(`[429 RETRY] ${instId} history-candles attempt ${attempt + 1}/2`);
-        await sleep(1000);
-      }
+    if (cached && now - cached.ts < ATR_CACHE_TTL) {
+      return cached.data;
     }
-    if (!resCandles || resCandles.status === 429 || !resCandles.ok) return cached?.data || null;
-    j = await resCandles.json();
-    if (!Array.isArray(j.data) || j.data.length < 20) return cached?.data || null;
 
+console.count("history-candles");
+    // Chỉ lấy nến 1H
+    const resCandles = await fetch(
+      `${OKX_API_BASE}/market/history-candles?instId=${instId}&bar=1H&limit=30`,
+      { cache: 'no-store' }
+    );
+
+    if (resCandles.status === 429) return cached?.data || null;
+    if (!resCandles.ok) return null;
+
+    const j = await resCandles.json();
+    
+    if (!Array.isArray(j.data) || j.data.length < 20) return null;
+
+    // Map dữ liệu nến cơ bản
     const candlesRaw = j.data.map(c => ({
-      high: Number(c[2]),
-      low: Number(c[3]),
-      close: Number(c[4]),
-      vol: Number(c[5])
+      high:  +c[2],
+      low:   +c[3],
+      close: +c[4],
+      vol:   +c[5]
     }));
-    const price1h = candlesRaw[1]?.close;
-    if (!Number.isFinite(price1h)) return cached?.data || null;
 
+    const price1h = candlesRaw[1].close;
+
+    /* 1. TÍNH ATR (14) */
     let trSum = 0;
     for (let i = 1; i <= 14; i++) {
-      const h = candlesRaw[i]?.high;
-      const l = candlesRaw[i]?.low;
-      const pc = candlesRaw[i + 1]?.close;
-      if (![h, l, pc].every(Number.isFinite)) return cached?.data || null;
+      const h = candlesRaw[i].high;
+      const l = candlesRaw[i].low;
+      const pc = candlesRaw[i + 1].close; // Close nến trước đó
       trSum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
     }
     const atr = trSum / 14;
 
-    // Giữ cùng một request nến và tính toàn bộ feature entry tại đây.
-    const ordered = candlesRaw.slice().reverse();
-    const closes = ordered.map(x => x.close).filter(Number.isFinite);
-    const sample = closes.slice(-20);
-    let rsi14_1h = null;
-    let bbZ20 = null;
-    if (sample.length >= 15) {
-      let gains = 0;
-      let losses = 0;
-      for (let i = sample.length - 14; i < sample.length; i++) {
-        const diff = sample[i] - sample[i - 1];
-        if (diff > 0) gains += diff;
-        else losses -= diff;
-      }
-      const avgGain = gains / 14;
-      const avgLoss = losses / 14;
-      rsi14_1h = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
-      const mean = sample.reduce((a, b) => a + b, 0) / sample.length;
-      const variance = sample.reduce((a, b) => a + ((b - mean) ** 2), 0) / sample.length;
-      const std = Math.sqrt(variance);
-      bbZ20 = std > 0 ? (Number(candlesRaw[0]?.close) - mean) / std : null;
-    }
+    /* 2. TÍNH VOL TRUNG BÌNH 1H (ĐỂ SO SÁNH VOLSPREAD) */
+    const volAvg1h = candlesRaw.slice(1, 11).reduce((sum, c) => sum + c.vol, 0) / 10;
 
-    let pv = 0;
-    let vv = 0;
-    for (const row of ordered.slice(-20)) {
-      if (Number.isFinite(row.close) && Number.isFinite(row.vol) && row.vol > 0) {
-        pv += row.close * row.vol;
-        vv += row.vol;
-      }
-    }
-    const vwap = vv > 0 ? pv / vv : null;
-    const lastClose = Number(candlesRaw[0]?.close);
-    const vwapDistPct = vwap > 0 && Number.isFinite(lastClose)
-      ? ((lastClose - vwap) / vwap) * 100
-      : null;
-
-    // VolSpread: completed 1H gần nhất / trung bình 10 bucket 1H trước đó.
-    const completedVol = Number(candlesRaw[1]?.vol);
-    const priorVols = candlesRaw.slice(2, 12).map(x => x.vol).filter(Number.isFinite);
-    const priorVolAvg = priorVols.length
-      ? priorVols.reduce((sum, value) => sum + value, 0) / priorVols.length
-      : null;
-    const volSpread = priorVolAvg > 0 && Number.isFinite(completedVol)
-      ? completedVol / priorVolAvg
-      : null;
-
-    const data = {
-      instId,
-      atr,
-      price1h,
-      volAvg1h: priorVolAvg,
-      rsi14_1h,
-      vwapDistPct,
-      bbZ20,
-      completedVol,
-      priorVolAvg,
-      volSpread
+    const data = { 
+      instId, 
+      atr, 
+      price1h, 
+      volAvg1h 
     };
-    atrCache[instId] = { ts: now, data };
+
+    atrCache[instId] = {
+      ts: now,
+      data
+    };
+
     return data;
+
   } catch (err) {
     console.error(`Lỗi fetchATR_Price1h cho ${instId}:`, err);
     return atrCache[instId]?.data || null;
@@ -572,117 +469,15 @@ function calcTP_SL(last, atr, isLong) {
 
 /* ================== CORE LOGIC ================== */
 async function scanOnce() {
-  const scanStartedAt = Date.now();
-    // ===== ENTRY FILTER FIXED — chỉ lọc entry, không thay đổi Top 60/Top 5 =====
-    const ENTRY_FILTER = {
-        longRsiMax: 55,
-        shortRsiMin: 45,
-        directionalVwapMaxPct: 2.0,
-        longBbZMax: 2.2,
-        shortBbZMin: -2.2
-    };
-
-    const isFiniteValue = value => Number.isFinite(Number(value));
-
-    // Entry filter only: missing feature rejects entry, never removes candidate from Top5.
-    const passesEntryFilter = c => {
-        if (!c) return false;
-        if (!isFiniteValue(c.rsi14_1h)) return false;
-        if (!isFiniteValue(c.vwapDistPct)) return false;
-        if (!isFiniteValue(c.bbZ20)) return false;
-        if (c.side === 'buy' && Number(c.rsi14_1h) > ENTRY_FILTER.longRsiMax) return false;
-        if (c.side === 'sell' && Number(c.rsi14_1h) < ENTRY_FILTER.shortRsiMin) return false;
-        if (c.side === 'buy' && Number(c.vwapDistPct) > ENTRY_FILTER.directionalVwapMaxPct) return false;
-        if (c.side === 'sell' && Number(c.vwapDistPct) < -ENTRY_FILTER.directionalVwapMaxPct) return false;
-        if (c.side === 'buy' && Number(c.bbZ20) > ENTRY_FILTER.longBbZMax) return false;
-        if (c.side === 'sell' && Number(c.bbZ20) < ENTRY_FILTER.shortBbZMin) return false;
-        return true;
-    };
-
-
-
-    // ================= TOP 5 TERMINAL LOGGER =================
-    // Logger chá» quan sÃ¡t tráº¡ng thÃ¡i; khÃ´ng can thiá»p ranking, entry hoáº·c trailing.
-    const top5TerminalState = globalThis._botTop5TerminalState || {
-        pumpKey: '',
-        dumpKey: '',
-        lastLogAt: 0,
-        lastEntryAt: 0
-    };
-
-    const top5Brief = list => (Array.isArray(list) ? list : []).map((x, i) => ({
-        rank: i + 1,
-        instId: x?.instId || '?',
-        delta: Number(x?.delta || 0),
-        last: Number(x?.last || 0),
-        side: x?.side || '?'
-    }));
-
-    const top5Key = list => top5Brief(list).map(x => x.instId).join('|');
-
-    const logTop5Terminal = (source = 'UNKNOWN', force = false) => {
-        try {
-            const now = Date.now();
-            const pump = top5Brief(topPump);
-            const dump = top5Brief(topDump);
-            const pumpKey = pump.map(x => x.instId).join('|');
-            const dumpKey = dump.map(x => x.instId).join('|');
-            const pumpChanged = pumpKey !== top5TerminalState.pumpKey;
-            const dumpChanged = dumpKey !== top5TerminalState.dumpKey;
-            const heartbeatDue = now - Number(top5TerminalState.lastLogAt || 0) >= 30000;
-
-            if (!force && !pumpChanged && !dumpChanged && !heartbeatDue) return;
-
-            const previousPump = String(top5TerminalState.pumpKey || '').split('|').filter(Boolean);
-            const previousDump = String(top5TerminalState.dumpKey || '').split('|').filter(Boolean);
-            const addedPump = pump.map(x => x.instId).filter(id => !previousPump.includes(id));
-            const removedPump = previousPump.filter(id => !pump.some(x => x.instId === id));
-            const addedDump = dump.map(x => x.instId).filter(id => !previousDump.includes(id));
-            const removedDump = previousDump.filter(id => !dump.some(x => x.instId === id));
-
-            const fmt = x => `${x.rank}:${x.instId} Î1H=${x.delta.toFixed(2)}% last=${x.last}`;
-            console.log(`\n[TOP5 ${source}] ${new Date(now).toISOString()}`);
-            console.log(`[TOP5 ${source}] Pump ${pump.length}/5 | ${pump.map(fmt).join(' || ') || 'EMPTY'}`);
-            console.log(`[TOP5 ${source}] Dump ${dump.length}/5 | ${dump.map(fmt).join(' || ') || 'EMPTY'}`);
-
-            if (pumpChanged || dumpChanged) {
-                console.log(
-                    `[TOP5 CHANGE] source=${source} ` +
-                    `Pump +[${addedPump.join(',') || '-'}] -[${removedPump.join(',') || '-'}] | ` +
-                    `Dump +[${addedDump.join(',') || '-'}] -[${removedDump.join(',') || '-'}]`
-                );
-            }
-
-            top5TerminalState.pumpKey = pumpKey;
-            top5TerminalState.dumpKey = dumpKey;
-            top5TerminalState.lastLogAt = now;
-            globalThis._botTop5TerminalState = top5TerminalState;
-        } catch (err) {
-            console.error('[TOP5 LOGGER ERROR]', err);
-        }
-    };
   if (isScanning) return;
   isScanning = true;
 
   const scanBtn = document.getElementById('scanNow');
   const status = document.getElementById('status');
-  const progressWrap = document.getElementById('scanProgressWrap');
-  const progressBar = document.getElementById('scanProgress');
-  const progressText = document.getElementById('scanProgressText');
-  const progressPct = document.getElementById('scanProgressPct');
-  const updateScanProgress = (done, total, label) => {
-    const safeTotal = Math.max(1, Number(total) || 1);
-    const pct = Math.max(0, Math.min(100, (Number(done) || 0) / safeTotal * 100));
-    if (progressWrap) progressWrap.style.display = 'block';
-    if (progressBar) progressBar.style.width = `${pct.toFixed(1)}%`;
-    if (progressPct) progressPct.textContent = `${pct.toFixed(0)}%`;
-    if (progressText) progressText.textContent = label || `Đang quét ${done}/${total}`;
-  };
 
   scanBtn.disabled = true;
   scanBtn.textContent = '⏳ Lấy Tickers...';
   status.textContent = '⏳ Đang quét dữ liệu toàn sàn...';
-  updateScanProgress(0, 120, 'Đang lấy danh sách toàn sàn...');
 
   try {
     /* ========= 0. INIT WS ========= */
@@ -701,49 +496,13 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
             if (!msg?.data) return;
 
             let needRender = false;
-            let rankDirty = false;
-            // Phải nằm ngoài vòng for để selectLiveTop() phía dưới cùng scope.
-            const liveScanPool = Array.isArray(globalThis._botScanCandidatePool)
-                ? globalThis._botScanCandidatePool
-                : [];
 
-            // FULL FIX: WebSocket cập nhật toàn bộ pool 120 rồi tái xếp hạng Top 5 live.
-            // Không đóng vị thế; chỉ cập nhật ranking và chuyển candidate mới sang entry flow.
             for (const d of msg.data) {
 
                 const inst = d.instId;
                 const last = Number(d.last);
 
                 if (!isFinite(last)) continue;
-
-                // FULL FIX + CPU GUARD: cập nhật toàn bộ pool 120 nhưng chỉ
-                // tính lại Delta/re-rank khi giá vượt ngưỡng động theo ATR.
-                const poolCoin = liveScanPool.find(x => x.instId === inst);
-                let meaningfulMove = false;
-
-                if (poolCoin && Number(poolCoin.price1h) > 0) {
-                    const referenceLast = Number(poolCoin.lastMeaningfulPrice || poolCoin.last || last);
-                    const priceMovePct = referenceLast > 0
-                        ? Math.abs((last - referenceLast) / referenceLast) * 100
-                        : 100;
-                    const atrPct = Number(poolCoin.atr) > 0
-                        ? (Number(poolCoin.atr) / last) * 100
-                        : 0;
-                    const minMovePct = Math.max(0.05, atrPct * 0.05);
-
-                    // Luôn cập nhật last để không mất giá live; chỉ tính Delta khi đủ biến động.
-                    poolCoin.last = last;
-                    meaningfulMove = priceMovePct >= minMovePct || poolCoin.delta === undefined;
-
-                    if (meaningfulMove) {
-                        poolCoin.delta = ((last - Number(poolCoin.price1h)) / Number(poolCoin.price1h)) * 100;
-                        poolCoin.liveUpdatedAt = Date.now();
-                        poolCoin.lastMeaningfulMovePct = priceMovePct;
-                        poolCoin.lastMeaningfulPrice = last;
-                        poolCoin.minMovePct = minMovePct;
-                        rankDirty = true;
-                    }
-                }
 
                 // DEBUG
                 // console.log("WS:", inst, last);
@@ -753,7 +512,7 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
                 if (pump) {
                     pump.last = last;
 
-                    if (meaningfulMove && pump.price1h) {
+                    if (pump.price1h) {
                         pump.delta = ((last - pump.price1h) / pump.price1h) * 100;
                     }
 
@@ -765,7 +524,7 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
                 if (dump) {
                     dump.last = last;
 
-                    if (meaningfulMove && dump.price1h) {
+                    if (dump.price1h) {
                         dump.delta = ((last - dump.price1h) / dump.price1h) * 100;
                     }
 
@@ -793,57 +552,9 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
 
             }
 
-            if (rankDirty) {
-                const selectLiveTop = side => liveScanPool
-                    .filter(x => side === 'buy' ? x.delta > 0 : x.delta < 0)
-                    .sort((a, b) => side === 'buy'
-                        ? b.delta - a.delta
-                        : a.delta - b.delta)
-                    .slice(0, TOP_N);
-
-                // VPS 24/7: chỉ re-rank khi có coin vượt ngưỡng biến động.
-                // Hai hướng Long/Short dùng cùng một cơ chế đối xứng.
-                topPump = selectLiveTop('buy');
-                topDump = selectLiveTop('sell');
-                console.log(`[WS POOL120] updated=${msg.data.length} pool=${liveScanPool.length} rankDirty=true → re-rank Pump=${topPump.length} Dump=${topDump.length}`);
-                logTop5Terminal('WS');
-
-                if (
-                    isTrading &&
-                    !isScanning &&
-                    !globalThis._botLiveEntryRunning &&
-                    (!globalThis._botLastLiveEntryAt || Date.now() - globalThis._botLastLiveEntryAt >= 1500)
-                ) {
-                    globalThis._botLastLiveEntryAt = Date.now();
-                    globalThis._botLiveEntryRunning = true;
-                    (async () => {
-                        try {
-                            const livePosRes = await okxApiRequest('/account/positions?instType=SWAP');
-                            const liveIds = new Set(
-                                livePosRes?.code === '0' && Array.isArray(livePosRes.data)
-                                    ? livePosRes.data.filter(p => Math.abs(+p.pos) > 0).map(p => p.instId)
-                                    : []
-                            );
-                            const cooldown = globalThis._botEntryCooldown || {};
-                            const liveQualityCandidates = [...topPump, ...topDump]
-                                .filter(c => c && c.instId && !activeOrders[c.instId] && !liveIds.has(c.instId) && !cooldown[c.instId] && passesEntryFilter(c));
-                            if (liveQualityCandidates.length > 0) {
-                                console.log(`[TOP5 ENTRY] candidates=${liveQualityCandidates.map(c => `${c.instId}:Δ1H=${Number(c.delta || 0).toFixed(2)}%`).join(' | ')}`);
-                                await masterFlow(liveQualityCandidates);
-                            }
-                        }
-                        catch (err) {
-                            console.error('Live WS entry error:', err);
-                        }
-                        finally {
-                            globalThis._botLiveEntryRunning = false;
-                        }
-                    })();
-                }
+            if (needRender) {
+                renderUI();
             }
-
-            // UI có thể cập nhật last price, nhưng không sort lại nếu tick nhỏ.
-            if (needRender) renderUI();
 
         } catch (err) {
             console.error("WS Error:", err);
@@ -862,45 +573,6 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
         console.error("WS Error:", err);
     };
 }
-
-    // FULL FIX: scanOnce tự xác nhận coin nào đã đóng TP/SL.
-    // Chỉ state đã từng được xác nhận có vị thế mới được đưa vào cooldown.
-    let entryCooldown = globalThis._botEntryCooldown ||
-      JSON.parse(localStorage.getItem('okx_entry_cooldown') || '{}') || {};
-    const closeCheckNow = Date.now();
-    for (const instId of Object.keys(entryCooldown)) {
-      if (Number(entryCooldown[instId]) <= closeCheckNow) delete entryCooldown[instId];
-    }
-
-    const positionCheck = await okxApiRequest('/account/positions?instType=SWAP');
-    if (positionCheck?.code === '0' && Array.isArray(positionCheck.data)) {
-      const livePositionIds = new Set(
-        positionCheck.data
-          .filter(p => Math.abs(+p.pos) > 0)
-          .map(p => p.instId)
-      );
-
-      for (const instId of Object.keys(activeOrders)) {
-        const st = activeOrders[instId];
-        if (livePositionIds.has(instId)) {
-          st.entryConfirmed = true;
-          continue;
-        }
-
-        if (st?.entryConfirmed === true) {
-          // Vị thế đã tồn tại trước đó nhưng không còn trên OKX:
-          // coi là đã hoàn tất TP/SL, cooldown đúng coin này.
-          entryCooldown[instId] = closeCheckNow + (REFRESH_MIN * 60 * 1000);
-          localStorage.setItem('last_exit_' + instId, closeCheckNow.toString());
-          delete activeOrders[instId];
-          console.log(`🔁 [SCAN REPLACEMENT] ${instId} không còn vị thế → cooldown 5 phút.`);
-        }
-      }
-
-      localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
-    }
-    globalThis._botEntryCooldown = entryCooldown;
-    localStorage.setItem('okx_entry_cooldown', JSON.stringify(entryCooldown));
 
     /* ========= BƯỚC 1: QUÉT TOÀN SÀN BẰNG DELTA 24H ========= */
     const res = await fetch(OKX_TICKERS);
@@ -924,52 +596,34 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
     const top24hDump = [...rawTickers].sort((a, b) => a.delta24h - b.delta24h).slice(0, 60);
 
     // Hợp nhất Top 120 để tính Delta 1h chi tiết
-    const top120Map = new Map();
-    for (const t of [...top24hPump, ...top24hDump]) {
-      if (t?.instId) top120Map.set(t.instId, t);
-    }
-    const top120Tickers = [...top120Map.values()];
+    const top120Tickers = [...top24hPump, ...top24hDump];
 
     let processed = 0;
     const countElem = document.getElementById('symbolsCount');
     if (countElem) countElem.innerText = `Số cặp: 0/${top120Tickers.length}`;
-    updateScanProgress(0, top120Tickers.length, `Đã chọn Top60 Pump + Top60 Dump → 0/${top120Tickers.length} nến`);
 
-    /* ========= BƯỚC 2: TÍNH DELTA 1H + ATR + ENTRY FEATURES CHO TOP 120 ========= */
+    /* ========= BƯỚC 2: TÍNH DELTA 1H + ATR CHO TOP 100 ========= */
     const atrPriceMap = {};
-    const scanConcurrency = 3;
-    const scanChunkDelayMs = 350;
-    const totalChunks = Math.ceil(top120Tickers.length / scanConcurrency);
-    for (let i = 0, chunkNo = 1; i < top120Tickers.length; i += scanConcurrency, chunkNo++) {
-      const chunk = top120Tickers.slice(i, i + scanConcurrency);
+    for (let i = 0; i < top120Tickers.length; i += CONCURRENCY_LIMIT) {
+      const chunk = top120Tickers.slice(i, i + CONCURRENCY_LIMIT);
       const rs = await Promise.all(chunk.map(t => fetchATR_Price1h(t.instId)));
       rs.forEach(r => { if (r?.instId) atrPriceMap[r.instId] = r; });
       processed += chunk.length;
-      if (status) status.textContent = `⏳ Đang tính Delta 1H/ATR: ${processed}/${top120Tickers.length} cặp...`;
+      if (status) status.textContent = `⏳ Đã tính Delta 1h: ${processed}/${top120Tickers.length} cặp...`;
       if (countElem) countElem.innerText = `Số cặp: ${processed}/${top120Tickers.length}`;
-      updateScanProgress(processed, top120Tickers.length, `Đang quét nến: ${processed}/${top120Tickers.length} · chunk ${chunkNo}/${totalChunks} · tối đa ${scanConcurrency} request`);
-      console.log(`[SCAN FETCH] chunk ${chunkNo}/${totalChunks}, requests=${chunk.length}, processed=${processed}/${top120Tickers.length}`);
-      if (processed < top120Tickers.length) await sleep(scanChunkDelayMs);
+      if (processed < top120Tickers.length) await sleep(800);
     }
 
-/* ========= BƯỚC 3: BUILD CANDIDATES & KIỂM TRA ĐỒNG THUẬN 24H x 1H ========= */
+   /* ========= BƯỚC 3: BUILD CANDIDATES & KIỂM TRA ĐỒNG THUẬN 24H x 1H ========= */
     const candidates = [];
     for (const t of top120Tickers) {
       const inst = t.instId;
       const last = Number(t.last);
       const delta24h = t.delta24h || 0;
       const dataInfo = atrPriceMap[inst] || {};
-      const { atr, price1h, candles, candles1h, candles4h, volAvg1h, rsi,
-        rsi14_1h, vwapDistPct, bbZ20, completedVol, priorVolAvg, volSpread } = dataInfo;
+      const { atr, price1h, candles, candles1h, candles4h, volAvg1h, rsi } = dataInfo; 
 
-      // SCAN/RANKING chỉ cần dữ liệu lõi; feature Entry thiếu không được làm mất candidate.
-      if (!last || !price1h || !Number.isFinite(Number(atr)) || Number(atr) <= 0) {
-        console.warn('[SCAN CORE DROP]', { inst, last, price1h, atr });
-        continue;
-      }
-      if (!isFiniteValue(rsi14_1h) || !isFiniteValue(vwapDistPct) || !isFiniteValue(bbZ20)) {
-        console.warn('[ENTRY FEATURE MISSING — CANDIDATE KEPT]', { inst, rsi14_1h, vwapDistPct, bbZ20 });
-      }
+      if (!last || !price1h) continue;
 
       const delta = (last - price1h) / price1h * 100; // Delta 1h thực tế
       
@@ -980,7 +634,8 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
       let isWatching = false; 
 
       const vol24h = parseFloat(t.volCcy24h || 0);
-      const currentVol = isFiniteValue(completedVol) ? Number(completedVol) : null;
+      const currentVol = parseFloat(t.vol24h || 0);
+      const volSpread = (volAvg1h && volAvg1h > 0) ? (currentVol / volAvg1h) : 1.2;
 
 
       // --- KIỂM TRA XU HƯỚNG ĐA KHUNG (MA20) ---
@@ -993,68 +648,32 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
 
       candidates.push({
         inst, instId: inst, last, price1h, delta, delta24h, atr, tp, sl, side,
-        tradeCase, vol24h, currentVol, volSpread, isSpecial, upperBB, lowerBB,
-        rsi14_1h: isFiniteValue(rsi14_1h) ? Number(rsi14_1h) : null,
-        vwapDistPct: isFiniteValue(vwapDistPct) ? Number(vwapDistPct) : null,
-        bbZ20: isFiniteValue(bbZ20) ? Number(bbZ20) : null,
-        completedVol: isFiniteValue(completedVol) ? Number(completedVol) : null,
-        priorVolAvg: isFiniteValue(priorVolAvg) ? Number(priorVolAvg) : null,
-        volSpread: isFiniteValue(volSpread) ? Number(volSpread) : null,
+        tradeCase, vol24h, currentVol, volSpread, isSpecial, upperBB, lowerBB, 
         isWatching
       });
     }
 
     /* ========= BƯỚC 4: SẮP XẾP THUẦN THEO DELTA 1H ========= */
 
-    // FULL FIX: mỗi scan tạo lại Top 5 động; không dùng watch pool cố định.
-    // Không loại coin vì nóng/đi ngang; chỉ cooldown coin vừa đóng TP/SL.
-    entryCooldown = globalThis._botEntryCooldown || entryCooldown;
-    const cooldownNow = Date.now();
-    for (const instId of Object.keys(entryCooldown)) {
-      if (Number(entryCooldown[instId]) <= cooldownNow) delete entryCooldown[instId];
-    }
+// Top Pump: Delta 1h > 0
+topPump = candidates
+    .filter(x => x.delta > 0)
+    .sort((a, b) => b.delta - a.delta)
+    .slice(0, TOP_N);
 
-    topPump = candidates
-      .filter(x => x.delta > 0)
-      .sort((a, b) => b.delta - a.delta)
-      .slice(0, TOP_N);
+// Top Dump: Delta 1h < 0
+topDump = candidates
+    .filter(x => x.delta < 0)
+    .sort((a, b) => a.delta - b.delta)
+    .slice(0, TOP_N);
 
-    topDump = candidates
-      .filter(x => x.delta < 0)
-      .sort((a, b) => a.delta - b.delta)
-      .slice(0, TOP_N);
-
-    console.log('[SCAN DEBUG]', {
-      top120: top120Tickers.length,
-      atrOK: Object.keys(atrPriceMap).length,
-      candidates: candidates.length,
-      pump: topPump.length,
-      dump: topDump.length
-    });
-
-    logTop5Terminal('SCAN', true);
-
-    globalThis._botScanCandidatePool = candidates;
-    globalThis._botEntryCooldown = entryCooldown;
-    localStorage.setItem('okx_entry_cooldown', JSON.stringify(entryCooldown));
-
-    console.log("Candidates:", candidates.length);
-    console.log("Top Pump:", topPump.length, topPump);
-    console.log("Top Dump:", topDump.length, topDump);
+console.log("Candidates:", candidates.length);
+console.log("Top Pump:", topPump.length, topPump);
+console.log("Top Dump:", topDump.length, topDump);
 
     /* ========= BƯỚC 5: WS SUBSCRIBE ========= */
     if (ws.readyState === WebSocket.OPEN) {
-      // Subscribe toàn bộ pool 120 + Top 5 hiện tại + vị thế đang mở.
-      // WS có đủ dữ liệu để tự tái xếp hạng Top 5 live.
-      const scanPool = Array.isArray(globalThis._botScanCandidatePool)
-        ? globalThis._botScanCandidatePool
-        : [];
-      const need = new Set([
-        ...scanPool.map(x => x.instId),
-        ...topPump.map(x => x.instId),
-        ...topDump.map(x => x.instId),
-        ...Object.keys(activeOrders)
-      ]);
+      const need = new Set([...topPump.map(x => x.instId), ...topDump.map(x => x.instId), ...Object.keys(activeOrders)]);
       for (const instId of need) {
         if (wsSubscribed.has(instId)) continue;
         ws.send(JSON.stringify({ op: 'subscribe', args: [{ channel: 'tickers', instId }] }));
@@ -1062,24 +681,10 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
       }
     }
 
-   /* ========= BƯỚC 6: MASTERFLOW ========= */
+    /* ========= BƯỚC 6: MASTERFLOW ========= */
     if (isTrading) {
         const qualityCandidates = [...(topPump || []), ...(topDump || [])]
             .filter(c => c && c.instId && !activeOrders[c.instId]);
-
-        console.log('[ENTRY FILTER]', {
-          totalTop5: [...topPump, ...topDump].length,
-          passed: qualityCandidates.length,
-          rejected: [...topPump, ...topDump]
-            .filter(c => !c || !c.instId || activeOrders[c.instId])
-            .map(c => ({
-              instId: c.instId,
-              side: c.side,
-              rsi: c.rsi14_1h,
-              vwapDist: c.vwapDistPct,
-              bbZ: c.bbZ20
-            }))
-        });
 
         for (const c of qualityCandidates) {
             const key = `signal-${c.instId}`;
@@ -1096,33 +701,15 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
             }
         }
 
-        await masterFlow(qualityCandidates);
-
-        // Xác nhận sau entry trong scanOnce để đánh dấu state đã có vị thế.
-        // monitorOrders chỉ trailing TP/SL, không thay coin.
-        const afterEntryRes = await okxApiRequest('/account/positions?instType=SWAP');
-        if (afterEntryRes?.code === '0' && Array.isArray(afterEntryRes.data)) {
-          const afterEntryIds = new Set(
-            afterEntryRes.data
-              .filter(p => Math.abs(+p.pos) > 0)
-              .map(p => p.instId)
-          );
-          for (const instId of afterEntryIds) {
-            if (activeOrders[instId]) activeOrders[instId].entryConfirmed = true;
-          }
-          localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
-        }
+        await masterFlow(qualityCandidates); 
     }
     renderUI();
     renderHistory();
     status.textContent = `✅ Cập nhật lúc ${new Date().toLocaleTimeString()}`;
-    updateScanProgress(top120Tickers.length, top120Tickers.length, `Hoàn tất quét ${top120Tickers.length}/${top120Tickers.length} · đã tạo Top5 Pump/Dump`);
 
   } catch (err) {
     log('Lỗi scan: ' + err.message);
-    updateScanProgress(0, 1, `❌ Scan lỗi: ${err.message}`);
   } finally {
-    console.log(`[SCAN PERF] ${((Date.now() - scanStartedAt) / 1000).toFixed(2)}s`);
     isScanning = false;
     scanBtn.disabled = false;
     scanBtn.textContent = '🔄 Quét ngay';
@@ -1285,155 +872,258 @@ const pool = (qualityCandidates || [])
     .filter(p => p && p.instId)
     .sort((a, b) => Math.abs(b.delta || 0) - Math.abs(a.delta || 0));
 
-    /* ===============================
-* 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT (GUARANTEED ENTRY FIX)
-* =============================== */
-for (const p of pool) {
-    if (openIds.size >= MAX_POSITIONS) break;
-    if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
-    if (openIds.has(p.instId)) continue;
+   /* ===============================
+     * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT
+     * =============================== */
+    for (const p of pool) {
+        if (openIds.size >= MAX_POSITIONS) break;
+        if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
+        if (openIds.has(p.instId)) continue;
 
-    const now = Date.now();
+        const now = Date.now();
 
-    try {
-        // FIX LỖI 1: Chuẩn hóa side về chữ thường ('buy' hoặc 'sell')
-        const sideLower = String(p.side).toLowerCase();
-        if (sideLower !== 'buy' && sideLower !== 'sell') continue;
+        try {
+            const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${p.instId}`);
+            const info = instRes?.data?.[0];
+            if (!info) continue;
 
-        // Xác định posSide chính xác 100% không lo lỗi hoa/thường
-        const posSide = sideLower === 'buy' ? 'long' : 'short';
+            const ctVal = parseFloat(info.ctVal);
+            const lotSz = parseFloat(info.lotSz);
+            const tickSz = parseFloat(info.tickSz);
+            const minSz = parseFloat(info.minSz || lotSz);
 
-        const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${p.instId}`);
-        const info = instRes?.data?.[0];
-        if (!info) continue;
+            const qPrec = info.lotSz.includes('.') ? info.lotSz.split('.')[1].length : 0;
+            const pPrec = info.tickSz.includes('.') ? info.tickSz.split('.')[1].length : 0;
 
-        const ctVal = parseFloat(info.ctVal) || 1;
-        const lotSz = parseFloat(info.lotSz) || 1;
-        const tickSz = parseFloat(info.tickSz) || 0.0001;
-        const minSz = parseFloat(info.minSz || info.lotSz || 1);
+           // 3️⃣ VÒNG LẶP HẠ ĐÒN BẨY VÀ TÍNH QTY CHUẨN ĐỊNH DẠNG (BỎ ".00")
+            let currentLeverage = parseInt(document.getElementById('leverage')?.value || 10);
+            if (isNaN(currentLeverage) || currentLeverage < 10) currentLeverage = 10;
+            
+            let finalQty = "";
+            let leverageFixed = false;
 
-        const qPrec = info.lotSz.includes('.') ? info.lotSz.split('.')[1].length : 0;
-        const pPrec = info.tickSz.includes('.') ? info.tickSz.split('.')[1].length : 0;
-
-        let uiLeverage = parseInt(document.getElementById('leverage')?.value || 50);
-        if (isNaN(uiLeverage) || uiLeverage < 1) uiLeverage = 50;
-
-        const allLeverages = [100, 75, 50, 30, 20, 10, 5, 3, 2, 1];
-        const levStepList = [uiLeverage, ...allLeverages]
-            .filter((v, i, a) => a.indexOf(v) === i && v <= Math.max(uiLeverage, 100))
-            .sort((a, b) => b - a);
-
-        let selectedLeverage = null;
-        let selectedQty = 0;
-
-        // 1. DÒ LEVERAGE: Ưu tiên cao -> Hạ dần
-        for (const lev of levStepList) {
-            // FIX LỖI 2: Truyền thêm posSide khi set leverage để đồng bộ vị thế LONG/SHORT
-            const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
+            while (currentLeverage >= 10) {
+              const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
                 instId: p.instId,
-                lever: lev.toString(),
-                mgnMode: 'cross',
-                posSide: posSide 
+                lever: currentLeverage.toString(),
+                mgnMode: 'cross'
+              });
+
+              if (levRes?.code === '0' || levRes?.code === '32115') {
+                let rawQty = (fixedMarginPerOrder * currentLeverage) / (p.last * ctVal);
+
+                let qty = Math.floor(rawQty / lotSz) * lotSz;
+                if (qty < minSz) {
+                  log(`⚠️ Bỏ qua ${p.instId}: Đòn bẩy ${currentLeverage}x khiến vốn không đủ mua mức tối thiểu sàn.`);
+                  leverageFixed = false;
+                  break;
+                }
+                
+                // FIX CHÍ MẠNG 51000: Ép chuỗi chuẩn không thừa chữ số thập phân vô nghĩa
+                finalQty = qPrec > 0 ? qty.toFixed(qPrec) : String(Math.round(qty));
+                
+                console.log(`🔍 [FORMAT CHECK LONG/SHORT] ${p.instId} | lotSz=${info.lotSz} | finalQty="${finalQty}"`);
+
+                leverageFixed = true;
+                break; 
+              } 
+              else if (levRes?.code === '59102') {
+                log(`🔄 ${p.instId} đòn bẩy sàn thấp hơn ${currentLeverage}x. Đang hạ bậc...`);
+                if (currentLeverage > 50) currentLeverage = 50;
+                else if (currentLeverage > 30) currentLeverage = 30;
+                else if (currentLeverage > 20) currentLeverage = 20;
+                else if (currentLeverage > 10) currentLeverage = 10;
+                else break;
+              } 
+              else {
+                log(`❌ Set leverage lỗi nặng ${p.instId}: code=${levRes?.code}`);
+                leverageFixed = false;
+                break;
+              }
+            }
+
+            // Nếu thiết lập đòn bẩy lỗi hoặc không đủ điều kiện minSz thì bỏ qua coin này
+            if (!leverageFixed || !finalQty) continue;
+
+            const tpStr = (Math.round(p.tp / tickSz) * tickSz).toFixed(pPrec);
+            const slStr = (Math.round(p.sl / tickSz) * tickSz).toFixed(pPrec);
+
+            const res = await okxApiRequest('/trade/order', 'POST', {
+                instId: p.instId,
+                tdMode: 'cross',
+                side: p.side,
+                posSide: p.side === 'buy' ? 'long' : 'short',
+                ordType: 'market',
+                sz: finalQty,
+                attachAlgoOrds: [
+                    { algoOrdType: 'take_profit', tpTriggerPx: tpStr, tpOrdPx: '-1' },
+                    { algoOrdType: 'stop_loss', slTriggerPx: slStr, slOrdPx: '-1' }
+                ]
             });
 
-            if (levRes?.code === '0' || levRes?.code === '32115') {
-                const rawQty = (fixedMarginPerOrder * lev) / (p.last * ctVal);
-                const calculatedQty = Math.floor(rawQty / lotSz) * lotSz;
+            if (res?.code === '0') {
+                if (typeof activeOrders !== 'undefined') {
+                    activeOrders[p.instId] = {
+    instId: p.instId,
+    side: p.side,
+    ts: now,
+    status: 'FILLED',
 
-                if (calculatedQty >= minSz) {
-                    selectedLeverage = lev;
-                    selectedQty = calculatedQty;
-                    break;
+    entry: p.last,
+    tp: parseFloat(tpStr),
+    sl: parseFloat(slStr),
+
+    tpBuffer: [parseFloat(tpStr), parseFloat(tpStr)],
+    slBuffer: [parseFloat(slStr), parseFloat(slStr)],
+
+    protected: true,
+    tradeCase: p.tradeCase || "Normal",
+
+    // THÊM 4 DÒNG NÀY
+    volSpread: p.volSpread,
+    upperBB: p.upperBB,
+    lowerBB: p.lowerBB,
+    isSpecial: p.isSpecial
+};
+                    localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
                 }
 
-                if (!selectedLeverage) {
-                    selectedLeverage = lev;
-                    selectedQty = calculatedQty;
-                }
-            }
-        }
+      log(`✅ HOÀN TẤT ${p.instId} | Case: ${p.tradeCase} | Entry: ${p.last} | TP/SL: OK`);
 
-        if (!selectedLeverage) {
-            log(`❌ Không thể cài đặt bất kỳ mức đòn bẩy nào cho ${p.instId}`);
-            continue;
-        }
+      const msg = `🚀 SUPPER BOT TÂN VÀO LỆNH THÀNH CÔNG\n` +
+                  `💎 Coin: ${p.instId.replace('-USDT-SWAP','')}\n` +
+                  `📝 Case: ${p.tradeCase || 'Normal'}\n` +
+                  `💵 Entry: ${p.last}\n` +
+                  `🎯 TP: ${p.tp} | 🛡️ SL: ${p.sl}`;
+      
+      if (typeof sendTelegram === 'function') sendTelegram(msg);
 
-        // 2. NẾU CHƯA ĐẠT MIN_SZ → BỎ QUA
-        if (selectedQty < minSz) {
-            log(`⚠️ BỎ QUA ${p.instId}: Vốn $${fixedMarginPerOrder} với Lev ${selectedLeverage}x không đủ đạt minSz (${minSz} hợp đồng).`);
-            continue;
-        }
-
-        // 3. TÍNH KÝ QUỸ THỰC TẾ
-        const actualMargin = (selectedQty * p.last * ctVal) / selectedLeverage;
-
-        const finalQty = qPrec > 0 ? selectedQty.toFixed(qPrec) : String(Math.round(selectedQty));
-        if (!finalQty || parseFloat(finalQty) <= 0) continue;
-
-        log(`Coin: ${p.instId} | Side: ${sideLower.toUpperCase()} (${posSide.toUpperCase()}) | Leverage: ${selectedLeverage}x | Qty: ${finalQty} | Target Margin: $${fixedMarginPerOrder} | Actual Margin: $${actualMargin.toFixed(4)}`);
-
-        const tpStr = (Math.round(p.tp / tickSz) * tickSz).toFixed(pPrec);
-        const slStr = (Math.round(p.sl / tickSz) * tickSz).toFixed(pPrec);
-
-        // 4. BẮT ĐẦU ĐẶT LỆNH MARKET (Đã dùng biến sideLower & posSide chuẩn)
-        const res = await okxApiRequest('/trade/order', 'POST', {
-            instId: p.instId,
-            tdMode: 'cross',
-            side: sideLower,       // 'buy' hoặc 'sell' chuẩn
-            posSide: posSide,     // 'long' hoặc 'short' chuẩn
-            ordType: 'market',
-            sz: finalQty,
-            attachAlgoOrds: [
-                { algoOrdType: 'take_profit', tpTriggerPx: tpStr, tpOrdPx: '-1' },
-                { algoOrdType: 'stop_loss', slTriggerPx: slStr, slOrdPx: '-1' }
-            ]
-        });
-
-        if (res?.code === '0') {
-            if (typeof activeOrders !== 'undefined') {
-                activeOrders[p.instId] = {
-                    instId: p.instId,
-                    side: sideLower.toUpperCase(),
-                    posSide: posSide,
-                    ts: now,
-                    status: 'FILLED',
-                    entry: p.last,
-                    tp: parseFloat(tpStr),
-                    sl: parseFloat(slStr),
-                    protected: true,
-                    tradeCase: p.tradeCase || "Normal"
-                };
-            }
-
-            log(`✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | Case: ${p.tradeCase} | Entry: ${p.last} | Lev: ${selectedLeverage}x | TP/SL: OK`);
-
-            const msg = `🚀 SUPPER BOT TÂN VÀO LỆNH THÀNH CÔNG\n` +
-                        `💎 Coin: ${p.instId.replace('-USDT-SWAP','')}\n` +
-                        `📊 Side: ${posSide.toUpperCase()}\n` +
-                        `📝 Case: ${p.tradeCase || 'Normal'}\n` +
-                        `⚡ Leverage: ${selectedLeverage}x\n` +
-                        `💵 Entry: ${p.last}\n` +
-                        `💰 Actual Margin: $${actualMargin.toFixed(2)}\n` +
-                        `🎯 TP: ${p.tp} | 🛡️ SL: ${p.sl}`;
-
-            if (typeof sendTelegram === 'function') sendTelegram(msg);
-
-            if (typeof fillerCooldown !== 'undefined') fillerCooldown[p.instId] = now;
-            openIds.add(p.instId);
-            if (typeof saveOrders === 'function') saveOrders();
-        } else {
-            log(`❌ LỖI API ${p.instId}: ${res?.msg || 'Unknown error'}`);
-        }
-    } catch (e) {
-        log(`❌ LỖI THỰC THI ${p.instId}: ${e.message}`);
+      fillerCooldown[p.instId] = now;
+      openIds.add(p.instId);
+      localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+    } else {
+      log(`❌ LỖI API ${p.instId}: ${res?.msg || 'Unknown error'}`);
     }
+  } catch (e) {
+    log(`❌ LỖI THỰC THI ${p.instId}: ${e.message}`);
+  }
 
-    await new Promise(r => setTimeout(r, 800));
+  await new Promise(r => setTimeout(r, 800));
 }
   } catch (e) {
     console.error('❌ masterFlow error:', e);
   }
 }
+
+
+
+/* ================== HÀM LƯU TRỮ DỮ LIỆU ================== */
+function saveOrders() {
+    try {
+        // ===== FIX LOCALSTORAGE CONFLICT (ĐỒNG BỘ THEO DỮ LIỆU THỰC TẾ) =====
+        const oldActive = JSON.parse(
+            localStorage.getItem('okx_active_orders') || '{}'
+        );
+
+        // Thay vì gộp mù quáng (khiến lệnh cũ không mất đi), 
+        // ta chỉ giữ lại những lệnh thực sự đang tồn tại trong biến RAM 'activeOrders'
+        const mergedActive = {};
+
+        for (const k in activeOrders) {
+            // Cập nhật thông tin mới nhất vào bản ghi, giữ lại thuộc tính cũ nếu cần
+            mergedActive[k] = {
+                ordType: 'oco',
+                ...(oldActive[k] || {}),
+                ...(activeOrders[k] || {})
+            };
+        }
+
+        // Lưu bản ghi đã được dọn dẹp (chỉ chứa các lệnh thực tế đang chạy)
+        localStorage.setItem(
+            'okx_active_orders',
+            JSON.stringify(mergedActive)
+        );
+
+        // Lịch sử giao dịch giữ nguyên hành vi cũ
+        localStorage.setItem(
+            'okx_trade_history',
+            JSON.stringify(tradeHistory)
+        );
+
+        // Đồng bộ lại RAM - Đảm bảo RAM không chứa các "lệnh ma" đã bị xóa ở trên
+        activeOrders = mergedActive;
+
+        console.log("💾 Đã lưu trạng thái lệnh và lịch sử vào máy.");
+    } catch (e) {
+        console.error("❌ Không thể lưu dữ liệu vào LocalStorage:", e);
+    }
+}
+
+
+/* ================== HÀM LẤY PNL 24H TỪ OKX ================== */
+async function updatePNL24h() {
+    if (!isTrading || !apiKey) return;
+    try {
+        const res = await okxApiRequest('/trade/orders-history?instType=SWAP&state=filled&limit=100');
+        if (res && res.code === '0' && Array.isArray(res.data)) {
+            let totalWin = 0, totalLoss = 0, totalPnlValue = 0;
+            tradeHistory = res.data.map(order => {
+                const pnl = parseFloat(order.pnl || 0);
+                if (pnl > 0) totalWin++; else if (pnl < 0) totalLoss++;
+                totalPnlValue += pnl;
+                return {
+                    time: parseInt(order.uTime), instId: order.instId,
+                    side: order.side, entry: order.avgPx, exit: order.fillPx, pnl: pnl
+                };
+            });
+
+            // Cập nhật thống kê cơ bản
+            const total = totalWin + totalLoss;
+            document.getElementById('totalOrders').innerText = total;
+            document.getElementById('winOrders').innerText = totalWin;
+            document.getElementById('lossOrders').innerText = totalLoss;
+            document.getElementById('winRate').innerText = (total > 0 ? ((totalWin/total)*100).toFixed(1) : 0) + '%';
+            const pnlEl = document.getElementById('totalPnL');
+            pnlEl.innerText = totalPnlValue.toFixed(2) + ' USDT';
+            pnlEl.className = totalPnlValue >= 0 ? 'up' : 'down';
+
+            // --- ĐOẠN HIỂN THỊ VỐN & BẢO VỆ ---
+            const capStatus = document.getElementById('capitalStatus');
+            if (capStatus) {
+                const orders = Object.values(activeOrders || {});
+                let usedCap = 0;
+                let protectedCount = 0;
+                orders.forEach(o => {
+                    usedCap += parseFloat(o.capital || 0);
+                    if (o.isTrailed || o.sl || o.tp) protectedCount++;
+                });
+
+                // Lấy số dư thực tế tính 5%
+                const balRes = await okxApiRequest('/account/balance?ccy=USDT');
+                const availBal = parseFloat(balRes?.data?.[0]?.details?.find(d => d.ccy === 'USDT')?.availBal || 0);
+                const lockedCap = availBal * 0.05;
+
+                capStatus.innerHTML = `
+                    <div style="margin-top: 8px; line-height: 1.6;">
+                        <div>💰 <b>Vốn khóa vòng (5%):</b> ${lockedCap.toFixed(2)} USDT</div>
+                        <div>🛡️ <b>Đã bảo vệ:</b> ${protectedCount}/${orders.length} lệnh</div>
+                    </div>
+                `;
+            }
+        }
+    } catch (e) { console.error('Lỗi PNL:', e); }
+}
+
+async function updatePnL() {
+    // Không cần isTrading – PnL vẫn cập nhật khi đang giữ lệnh
+    await updatePNL24h();
+
+    if (typeof renderHistory === 'function') {
+        renderHistory();
+    }
+}
+
+
 
 /* ================== MONITORING & UI (FIXED) ================== */
 async function monitorOrders() {
@@ -1509,220 +1199,161 @@ for (const id in activeOrders) {
 st.slBuffer = Array.isArray(st.slBuffer) ? st.slBuffer : [];
 st.tpBuffer = Array.isArray(st.tpBuffer) ? st.tpBuffer : [];
 st.currentSL = st.currentSL || st.sl || 0;
-                if (!st) continue;
+                if (!st) continue; 
 
-/* ================== VỊ THẾ NGUY HIỂM DO KÝ QUỸ PHÌNH TO ================== */
-const marginUsed = Math.abs(parseFloat(p.margin || p.imr || 0));
-const capitalPerTrade = parseFloat(document.getElementById('capitalPerTrade')?.value || 0);
+                /* ================= CẮT LỖ KHẨN CẤP (KẾT HỢP 2 LOGIC) ================= */
+if (false) {
+// Hard stop -50% (giữ nguyên nguyên tắc cũ)
+if (pnlPct <= -50) {
+    console.log(`⚠️ [HARD STOP] ${instId} đạt -50%. Đóng vị thế...`);
 
-if (
-    capitalPerTrade > 0 &&
-    leverage >= 10 &&
-    marginUsed >= capitalPerTrade * 1.5
-) {
-
-    // SIẾT RỦI RO CHO VỊ THẾ QUÁ NẶNG
-    forceSLtoOldTP = pnlPct >= 25;
-
-    // KHÓA LÃI SỚM HƠN ĐỂ TRÁNH QUAY XE MẠNH
-    if (pnlPct >= 15) {
-
-        // FIX LỖI 3: Dùng Math.max/min động đồng bộ với Khối 1 để không mất đỉnh
-        const dangerPeakPrice = isLong ? Math.max(...st.tpBuffer) : Math.min(...st.tpBuffer);
-
-        const dropFromPeak = isLong
-            ? (dangerPeakPrice - last) / dangerPeakPrice * 100 * leverage
-            : (last - dangerPeakPrice) / dangerPeakPrice * 100 * leverage;
-
-        // COIN BIẾN ĐỘNG NHANH → SIẾT PULLBACK
-        const dangerTrigger =
-            pnlPct >= 100 ? 25 :
-            pnlPct >= 70 ? 20 :
-            pnlPct >= 40 ? 15 : 10;
-
-        // FIX LỖI 2: Không dùng từ khóa const/let để tránh trùng lặp biến với Khối 1
-        const dp1 = st.tpBuffer[st.tpBuffer.length - 1] || last;
-        const dp2 = st.tpBuffer[st.tpBuffer.length - 3] || last;
-
-        const dangerExhaustion = isLong ? (dp1 < dp2) : (dp1 > dp2);
-
-        if (dropFromPeak >= dangerTrigger && dangerExhaustion) {
-
-            const closeRes = await okxApiRequest('/trade/order', 'POST', {
-                instId,
-                tdMode: 'cross',
-                side: isLong ? 'sell' : 'buy',
-                posSide: isLong ? 'long' : 'short',
-                ordType: 'market',
-                sz: posQty.toString()
-            });
-
-            if (closeRes?.code === '0') {
-
-                if (typeof sendTelegram === 'function') {
-                    sendTelegram(`⚠️ DANGER POSITION EXIT: ${instId}\n📈 PNL: ${pnlPct.toFixed(2)}%\n💥 Margin: ${marginUsed.toFixed(2)} USDT`);
-                }
-
-                delete activeOrders[instId];
-                localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
-                
-                return; // FIX LỖI 1: Thay bằng return để an toàn giải phóng luồng, không gây crash bot
-            }
-        }
-    }
-}
-/* ================================================================ */ 
-
-if (true) {
-/* ================= 1. CẮT LỖ (HARD & SOFT) - PHIÊN BẢN ĐÒN BẨY 20X DÒNG TIỀN ================= */
-// 1. HARD STOP: Ngưỡng tối lùi tuyệt đối bảo vệ tài khoản khi có biến động cực đoan
-if (pnlPct <= -30) { 
-    const closeRes = await okxApiRequest('/api/v5/trade/order', 'POST', {
-        instId, tdMode: 'cross', side: isLong ? 'sell' : 'buy',
-        posSide: isLong ? 'long' : 'short', ordType: 'market', sz: posQty.toString()
+    const closeRes = await okxApiRequest('/trade/order', 'POST', {
+        instId,
+        tdMode: 'cross',
+        side: isLong ? 'sell' : 'buy',
+        posSide: isLong ? 'long' : 'short',
+        ordType: 'market',
+        sz: posQty.toString()
     });
+
     if (closeRes?.code === '0') {
-        const msg = `🛑 **HARD STOP 20X: ${instId}**\n📉 PNL: ${pnlPct.toFixed(2)}%\n🛡️ Cắt lỗ tuyệt đối bảo vệ cháy tài sản.`;
+        const msg = `🛑 **SIÊU BOT TÂN HARD STOP: ${instId}**\n📉 PNL: ${pnlPct.toFixed(2)}%\n🛡️ Đã đóng Market (-70%).`;
         if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
+        // CHÈN DÒNG NÀY TẠI ĐÂY
+        localStorage.setItem('last_exit_' + instId, Date.now().toString());
         delete activeOrders[instId];
-        return; 
+        localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+        continue;
     }
 }
 
-// 2. SOFT STOP THEO DÒNG TIỀN KIỆT SỨC (KHÔNG DÙNG NẾN ĐỘ TRỄ CAO)
+/* ================= SOFT STOP: -15% + PATTERN (LOGIC BẢN 2) ================= */
 if (pnlPct <= -20) {
-    if (st.tpBuffer && st.tpBuffer.length >= 10) {
-        
-        // Đo lường biên độ dòng tiền đang ép vị thế vào thế âm
-        const maxInBuffer = Math.max(...st.tpBuffer);
-        const minInBuffer = Math.min(...st.tpBuffer);
-        const bufferRange = maxInBuffer - minInBuffer;
+    try {
+        const candleRes = await okxApiRequest(`/market/candles?instId=${instId}&bar=15m&limit=2`);
+        const candles = candleRes?.data || [];
 
-        // Xác định xu hướng dòng tiền của 2 ticks gần nhất
-        const p1 = st.tpBuffer[st.tpBuffer.length - 1] || last;
-        const p2 = st.tpBuffer[st.tpBuffer.length - 2] || last;
+        if (candles.length >= 2) {
+            const [curr, prev] = candles;
 
-        let opponentIsStrong = false;
+            const c = { o: +curr[1], h: +curr[2], l: +curr[3], close: +curr[4] };
+            const pPrev = { o: +prev[1], close: +prev[4] };
 
-        if (bufferRange > 0) {
-            if (isLong) {
-                // Vị thế LONG đang âm: Phe bán đang ép xuống. 
-                // Phe bán MẠNH khi: Giá hiện tại nằm sát đáy của 120 ticks (dưới 15% biên độ đáy) VÀ tick sau vẫn thấp hơn tick trước (đang rơi tiếp).
-                opponentIsStrong = (last < (minInBuffer + bufferRange * 0.15)) && (p1 < p2);
-            } else {
-                // Vị thế SHORT đang âm: Phe mua đang đẩy lên.
-                // Phe mua MẠNH khi: Giá hiện tại nằm sát đỉnh của 120 ticks (trên 85% biên độ đỉnh) VÀ tick sau vẫn cao hơn tick trước (đang đẩy tiếp).
-                opponentIsStrong = (last > (maxInBuffer - bufferRange * 0.15)) && (p1 > p2);
+            const body = Math.abs(c.o - c.close);
+
+            const isPinbar = isLong
+                ? (c.h - Math.max(c.o, c.close) > body * 4)
+                : (Math.min(c.o, c.close) - c.l > body * 4);
+
+            const isSignificantBody = Math.abs(c.close - c.o) / c.o > 0.003;
+
+            const isEngulfing = isSignificantBody && (isLong
+                ? (pPrev.close > pPrev.o && c.o >= pPrev.close && c.close < pPrev.o)
+                : (pPrev.close < pPrev.o && c.o <= pPrev.close && c.close > pPrev.o));
+
+            if (isPinbar || isEngulfing || pnlPct <= -20) {
+                console.log(`⚠️ [SOFT STOP] ${instId} phát hiện đảo chiều.`);
+
+                const closeRes = await okxApiRequest('/trade/order', 'POST', {
+                    instId,
+                    tdMode: 'cross',
+                    side: isLong ? 'sell' : 'buy',
+                    posSide: isLong ? 'long' : 'short',
+                    ordType: 'market',
+                    sz: posQty.toString()
+                });
+
+                if (closeRes?.code === '0') {
+                    const msg = `⚠️ **SIÊU BOT HONG SOFT STOP: ${instId}**\n📉 PNL: ${pnlPct.toFixed(2)}%\n📊 Pattern đảo chiều M15 → đóng lệnh.`;
+                    if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
+                    // CHÈN DÒNG NÀY TẠI ĐÂY
+                    localStorage.setItem('last_exit_' + instId, Date.now().toString());
+                    delete activeOrders[instId];
+                    localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+                    continue;
+                }
             }
-        } else {
-            // Fallback nếu chưa có biên độ: dựa vào hướng đi trực tiếp của tick
-            opponentIsStrong = isLong ? (p1 < p2) : (p1 > p2);
         }
-
-        // CHỈ CẮT LỖ SỚM KHI PHE ĐỐI THỦ ĐANG QUÁ MẠNH VÀ CHƯA CÓ DẤU HIỆU KIỆT SỨC
-        if (opponentIsStrong) {
-            const closeRes = await okxApiRequest('/api/v5/trade/order', 'POST', {
-                instId, tdMode: 'cross', side: isLong ? 'sell' : 'buy',
-                posSide: isLong ? 'long' : 'short', ordType: 'market', sz: posQty.toString()
-            });
-            if (closeRes?.code === '0') {
-                const msg = `⚠️ **SOFT STOP DÒNG TIỀN: ${instId}**\n📉 PNL: ${pnlPct.toFixed(2)}%\n📊 Lực ép đối thủ quá mạnh, chưa kiệt sức -> Thoát sớm giảm rủi ro.`;
-                if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
-                delete activeOrders[instId];
-                return;
-            }
-        }
-        // NẾU OPPONENT_IS_STRONG = FALSE (Phe đối thủ đã hụt hơi, giá bắt đầu rút râu ngược lại trong mảng ticks):
-        // --> BOT SẼ TỰ ĐỘNG BỎ QUA KHÔNG CẮT, CHO PHÉP VỊ THẾ GỒNG QUA NHỊP RŨ ĐỂ COIN BAY TIẾP.
-    }
+    } catch (e) {}
 }
 }
 
-/* ================= 1. TP & BUFFER (ADAPTIVE SHADOW TP + CHỐNG NHIỄU EXHAUSTION) ================= */
+               /* ================= 1. TP ENGINE (DYNAMIC TARGET + BOLLINGER / R-S EXIT - 6 STATES) ================= */
+let forceSLtoOldTP = false;
 
 if (!st.tpBuffer) st.tpBuffer = [];
-if (!st.tpBuffer.length) st.tpBuffer[0] = last;
-
-// Cập nhật giá trị vào cuối mảng
 st.tpBuffer.push(last);
 if (st.tpBuffer.length > 120) st.tpBuffer.shift();
 
-// FIX LỖI 1: Xác định peakPrice động trực tiếp dựa trên toàn bộ mảng thay vì cố định lưu vào index 0 gây lỗi tụt đỉnh khi shift
-const peakPrice = isLong ? Math.max(...st.tpBuffer) : Math.min(...st.tpBuffer);
+if (st.peakPrice === undefined) st.peakPrice = last;
+if (isLong && last > st.peakPrice) st.peakPrice = last;
+if (!isLong && last < st.peakPrice) st.peakPrice = last;
 
-// KHAI BÁO TẠI ĐÂY ĐỂ TRÁNH LỖI KHỐI DƯỚI KHÔNG TRUY CẬP ĐƯỢC KHI PNL < TPTHRESHOLD
-let finalTP = st.tp;
-let forceSLtoOldTP = false; 
+// Lấy ATR hiện tại (mặc định fallback 0.5% nếu chưa truyền ATR vào st)
+const currentAtr = st.atr || (last * 0.005); 
 
-let tpThreshold = 10; 
+// Xác định mục tiêu Cản ưu tiên (Resistance / Support)
+const mainTarget = isLong ? st.resistPrice : st.supportPrice;
+const bbBound = isLong ? st.upperBB : st.lowerBB;
+
+let dynamicTP = st.tp;
+
+// 1. TÍNH MỤC TIÊU TP ĐỘNG DỰA TRÊN CẢN LÀM ƯU TIÊN HÀNG ĐẦU
+if (isLong) {
+    if (mainTarget && mainTarget > last) dynamicTP = mainTarget;
+    else if (bbBound && bbBound > last) dynamicTP = bbBound;
+} else {
+    if (mainTarget && mainTarget < last) dynamicTP = mainTarget;
+    else if (bbBound && bbBound < last) dynamicTP = bbBound;
+}
+
+if (st.currentTP) {
+    dynamicTP = isLong ? Math.max(dynamicTP, st.currentTP) : Math.min(dynamicTP, st.currentTP);
+}
+st.currentTP = dynamicTP;
+let finalTP = dynamicTP;
+
+// 2. KÍCH HOẠT CHỐT LỜI ĐA TRẠNG THÁI (PNL >= 15-20%)
+let tpThreshold = st.tradeCase?.includes("Trend") ? 20 : 15;
 
 if (pnlPct >= tpThreshold) {
     
-    const maxInBuffer = Math.max(...st.tpBuffer); 
-    const minInBuffer = Math.min(...st.tpBuffer); 
-    const bufferRange = maxInBuffer - minInBuffer;
+    // Tín hiệu kiệt sức chuẩn hóa (Xác nhận 3 tick liên tiếp giảm/tăng để loại bỏ nhiễu)
+    const bufLen = st.tpBuffer?.length || 0;
+    const p1 = bufLen >= 1 ? st.tpBuffer[bufLen - 1] : last;
+    const p2 = bufLen >= 2 ? st.tpBuffer[bufLen - 2] : last;
+    const p3 = bufLen >= 3 ? st.tpBuffer[bufLen - 3] : last;
     
-    let exhaustion = false;
-    const p1 = st.tpBuffer[st.tpBuffer.length - 1] || last;
-    const p2 = st.tpBuffer[st.tpBuffer.length - 2] || last;
-    const candleTrend = isLong ? (p1 < p2) : (p1 > p2);
+    const exhaustion = isLong ? (p1 < p2 && p2 < p3) : (p1 > p2 && p2 > p3);
 
-    // FIX LỖI 3: SIẾT CHẶT LOGIC TP KHI GIÁ VƯỢT BIÊN BOLLINGER BANDS VÀ RÚT RÂU
-    let isOutBBAndReversal = false;
-    if (typeof upperBB !== 'undefined' && typeof lowerBB !== 'undefined') {
-        if (isLong && p2 > upperBB && last < upperBB) {
-            // Lệnh Long: Giá nến trước ở ngoài biên trên, giá hiện tại chui ngược vào trong (Rút râu suy yếu)
-            isOutBBAndReversal = true;
-        } else if (!isLong && p2 < lowerBB && last > lowerBB) {
-            // Lệnh Short: Giá nến trước ở ngoài biên dưới, giá hiện tại giật ngược vào trong
-            isOutBBAndReversal = true;
-        }
+    // Tính khoảng cách từ giá hiện tại đến Cản chính (Resistance / Support)
+    const distToTarget = mainTarget ? Math.abs(mainTarget - last) : Infinity;
+
+    // Kiểm tra trạng thái Breakout thất bại (Vượt BB/Cản rồi quay ngược vào trong)
+    const hasBrokenOut = isLong 
+        ? ((bbBound && st.peakPrice > bbBound) || (mainTarget && st.peakPrice > mainTarget))
+        : ((bbBound && st.peakPrice < bbBound) || (mainTarget && st.peakPrice < mainTarget));
+        
+    const pulledBack = isLong 
+        ? ((bbBound && last < bbBound) || (mainTarget && last < mainTarget))
+        : ((bbBound && last > bbBound) || (mainTarget && last > mainTarget));
+
+    const isFailedBreakout = hasBrokenOut && pulledBack && exhaustion;
+
+    /* 🟣 TRƯỜNG HỢP 6: PARABOLIC RUN (PNL > 80%) -> BỎ TP, GIAO TOÀN BỘ CHO TRAILING SL */
+    if (pnlPct >= 80) {
+        console.log(`🟣 [STATE 6 - PARABOLIC RUN] ${instId} Đạt PNL ${pnlPct.toFixed(2)}%. Hủy TP để gồng sóng siêu pump bằng Trailing SL!`);
+        finalTP = null;
+        st.currentTP = null;
+        
+        const msg = `🟣 **SIÊU BOT TÂN UNLOCK TP (STATE 6 - PARABOLIC RUN): ${instId}**\n` +
+                    `🚀 PNL cực đại: ${pnlPct.toFixed(2)}%\n` +
+                    `📌 Hành động: Đã gỡ bỏ TP target. Giao toàn bộ vị thế cho Trailing SL gồng trend!`;
+        if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
     }
-
-    if (isOutBBAndReversal) {
-        // Nếu đã phá biên BB mà rút râu + dòng tiền yếu (volSpread giảm hoặc nến giảm) -> Kích hoạt kiệt sức lập tức để siết TP
-        exhaustion = true; 
-    } else if (bufferRange > 0) {
-        if (isLong && last >= (maxInBuffer - bufferRange * 0.05)) {
-            exhaustion = candleTrend;
-        } else if (!isLong && last <= (minInBuffer + bufferRange * 0.05)) {
-            exhaustion = candleTrend;
-        } else if (pnlPct < 30) {
-            exhaustion = isLong 
-                ? (last < (maxInBuffer - bufferRange * 0.10) && candleTrend) 
-                : (last > (minInBuffer + bufferRange * 0.10) && candleTrend);
-        } else {
-            finalTP = null; 
-            forceSLtoOldTP = true;
-            
-            exhaustion = isLong 
-                ? (last < (maxInBuffer - bufferRange * 0.30) && candleTrend) 
-                : (last > (minInBuffer + bufferRange * 0.30) && candleTrend);
-        }
-    } else {
-        exhaustion = candleTrend;
-    }
-
-    // Tính % sụt giảm PNL từ đỉnh thực tế (Không lo bị mất đỉnh khi mảng shift)
-    const dropFromPeak = isLong
-        ? (peakPrice - last) / peakPrice * 100 * leverage
-        : (last - peakPrice) / peakPrice * 100 * leverage;
-
-    // FIX LỖI 2: Hạ dropTrigger xuống mức cực thấp (chỉ 1.5% đến 2%) khi phát hiện tín hiệu rút râu ngoài biên BB để siết chặt điểm chốt
-    const dropTrigger = isOutBBAndReversal ? 1.5 : (
-    pnlPct >= 150 ? 5 :
-    pnlPct >= 100 ? 8 :
-    pnlPct >= 60  ? 10 :
-    pnlPct >= 30  ? 15 : 20
-);
-
-    // Lệnh chốt Market từ đỉnh
-    if (
-        dropFromPeak >= dropTrigger && 
-        (isLong ? last < peakPrice : last > peakPrice) && 
-        exhaustion
-    ) {
-        console.log(`🎯 [BB & EXHAUSTION TP KÍCH HOẠT] ${instId} chốt tại PNL: ${pnlPct.toFixed(2)}% (Sụt từ đỉnh biên BB: ${dropFromPeak.toFixed(2)}%)`);
+    /* 🔴 TRƯỜNG HỢP 4: BREAKOUT THẤT BẠI -> MARKET CLOSE NGAY */
+    else if (isFailedBreakout) {
+        console.log(`🔴 [STATE 4 - FAILED BREAKOUT] ${instId} Breakout thất bại + Kiệt sức. Market Close ngay! PNL: ${pnlPct.toFixed(2)}%`);
 
         const closeRes = await okxApiRequest('/trade/order', 'POST', {
             instId,
@@ -1734,61 +1365,127 @@ if (pnlPct >= tpThreshold) {
         });
 
         if (closeRes?.code === '0') {
-            const msg = `💰 **SIÊU BOT TÂN CHỐT TP (BIÊN BB & DÒNG TIỀN KIỆT SỨC): ${instId}**\n` +
+            const msg = `🔴 **SIÊU BOT TÂN TP (STATE 4 - BREAKOUT THẤT BẠI): ${instId}**\n` +
                         `📈 PNL Chốt: ${pnlPct.toFixed(2)}%\n` +
-                        `🏆 Siết chặt lợi nhuận thành công khi giá rút râu ngoài dải Bollinger Bands.`;
+                        `💵 Giá đóng: ${last}\n` +
+                        `🛡️ Lý do: Giá vọt Cản/BB thất bại và bị cản lực rướn.`;
 
             if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
             if (typeof fillerCooldown !== 'undefined') fillerCooldown[instId] = Date.now();
             delete activeOrders[instId];
+            delete st.currentTP;
+            delete st.peakPrice;
             localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
             continue;
         }
     }
-} else {
-    finalTP = st.currentTP || st.tp;
+    /* 🟢 TRƯỜNG HỢP 1 & 5: TREND KHỎE HOẶC CÒN CÁCH XA CẢN (> 1.0 ATR) -> GIỮ TP GỐC */
+    else if (!exhaustion || distToTarget > currentAtr * 1.0) {
+        console.log(`🟢 [STATE 1/5 - STRONG TREND / FAR TARGET] ${instId} Trend khỏe hoặc Cản còn xa (> 1.0 ATR). Giữ TP tại: ${st.currentTP}`);
+    }
+    /* 🟠 TRƯỜNG HỢP 3: KIỆT SỨC SÁT CẢN (CÁCH < 0.3 ATR HOẶC CHẠM BB) -> DỜI TP THEO ĐỈNH VỪA TẠO + 0.2 ATR */
+    else if (exhaustion && (distToTarget < currentAtr * 0.3 || (bbBound && (isLong ? last >= bbBound : last <= bbBound)))) {
+        const oldTP = st.currentTP;
+        finalTP = isLong 
+            ? Math.max(st.peakPrice, last) + (currentAtr * 0.2) 
+            : Math.min(st.peakPrice, last) - (currentAtr * 0.2);
+            
+        // Kích hoạt cập nhật thực tế lên sàn OKX khi TP biến động
+        if (Math.abs(finalTP - (oldTP || 0)) > (currentAtr * 0.05)) {
+            console.log(`🟠 [STATE 3 - NEAR TARGET EXHAUSTION] ${instId} Kiệt sức sát cản/BB. Dời TP vượt Đỉnh/Đáy vừa tạo 0.2 ATR.`);
+            st.currentTP = finalTP;
+
+            const msg = `🟠 **SIÊU BOT TÂN AMEND TP (STATE 3 - KIỆT SỨC SÁT CẢN): ${instId}**\n` +
+                        `📈 PNL hiện tại: ${pnlPct.toFixed(2)}%\n` +
+                        `🎯 Dời TP mới: ${finalTP.toFixed(5)}\n` +
+                        `📌 Lý do: Kiệt sức gần Cản/BB, kéo TP sát đỉnh peak để rướn hit nhịp cuối.`;
+            if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
+        }
+    }
+    /* 🟡 TRƯỜNG HỢP 2: KIỆT SỨC TRONG DƯ ĐỊA CHUẨN (CÁCH CẢN 0.3 ~ 1.0 ATR) -> DỜI TP LÊN NẰM TRONG VÙNG CẢN */
+    else if (exhaustion && distToTarget >= currentAtr * 0.3 && distToTarget <= currentAtr * 1.0) {
+        const oldTP = st.currentTP;
+        const targetTP = mainTarget || bbBound || (isLong ? last + currentAtr : last - currentAtr);
+        finalTP = isLong 
+            ? Math.min(targetTP, last + currentAtr * 0.8) 
+            : Math.max(targetTP, last - currentAtr * 0.8);
+            
+        // Kích hoạt cập nhật thực tế lên sàn OKX khi TP biến động
+        if (Math.abs(finalTP - (oldTP || 0)) > (currentAtr * 0.05)) {
+            console.log(`🟡 [STATE 2 - EXHAUSTION WITH SPACE] ${instId} Kiệt sức trong dư địa 0.3-1.0 ATR. Dời TP tiếp cận vùng Cản/BB.`);
+            st.currentTP = finalTP;
+
+            const msg = `🟡 **SIÊU BOT TÂN AMEND TP (STATE 2 - KIỆT SỨC CÒN DƯ ĐỊA): ${instId}**\n` +
+                        `📈 PNL hiện tại: ${pnlPct.toFixed(2)}%\n` +
+                        `🎯 Dời TP mới: ${finalTP.toFixed(5)}\n` +
+                        `📌 Lý do: Kiệt sức nhẹ (dư địa 0.3-1 ATR), dời TP đón vùng Cản/BB.`;
+            if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
+        }
+    }
 }
 
-/* ================= 2. SL TRAILING & BUFFER (BẢO VỆ CHẶT CHẼ THEO TỪNG CẤP ĐỘ) ================= */
+/* ================= 2. SL TRAILING & BUFFER (GỘP TỐI ƯU) ================= */
 let proposedSL = null; 
 const holdTimeMins = (Date.now() - st.ts) / 60000; 
-
-// CHẶN QUÉT NON: Xác nhận lệnh đã "vào form" ổn định
 const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10; 
 
-// A. KHÓA LÃI LỚN KHI PNL >= 30% (XỬ LÝ LỖI THUA NGƯỢC)
-if (pnlPct >= 30) {
-    // Ưu tiên 1: Dời SL lên mốc TP cũ nếu có
-    if (forceSLtoOldTP && st.tp) {
-        proposedSL = +st.tp;
-    } else {
-        // Ưu tiên 2: Nếu không có TP cũ, ép khóa tối thiểu 15% PNL lãi (Giữ Gap tối đa 15% so với giá chạy)
-        let safeGap = 15;
-        proposedSL = entry * (1 + (isLong ? (pnlPct - safeGap) / 100 / leverage : -(pnlPct - safeGap) / 100 / leverage));
-    }
+// CHỐNG BỐC HƠI PNL: DỜI SL THEO ĐỈNH (TRAILING STOP DỰA TRÊN DROPTRIGGER)
+const peakPrice = st.peakPrice || last;
+const dropFromPeak = isLong
+    ? (peakPrice - last) / peakPrice * 100 * leverage
+    : (last - peakPrice) / peakPrice * 100 * leverage;
+
+const dropTrigger =
+    (st.tradeCase?.includes("Trend") || st.isSpecial) 
+        ? (pnlPct >= 150 ? 30 : (pnlPct >= 100 ? 25 : 20))
+        : (st.tradeCase?.includes("Rev")
+            ? (pnlPct >= 60 ? 12 : 8)
+            : (pnlPct >= 100 ? 20 : (pnlPct >= 60 ? 15 : 10)));
+
+/* ---------- BỔ SUNG: PHANH KHẨN CẤP THIÊN NGA ĐEN (PUMP & DUMP / FLASH DUMP) ---------- */
+const bufferLen = st.tpBuffer?.length || 0;
+const recentPrice = bufferLen >= 6 ? st.tpBuffer[bufferLen - 6] : peakPrice;
+const flashDropPct = isLong
+    ? (recentPrice - last) / recentPrice * 100 * leverage
+    : (last - recentPrice) / recentPrice * 100 * leverage;
+
+const isBlackSwan = (pnlPct >= 15 && flashDropPct >= 12) || (dropFromPeak >= 20 && pnlPct < 30);
+
+if (isBlackSwan) {
+    proposedSL = last;
+}
+else if (pnlPct >= 30 && dropFromPeak >= dropTrigger && (isLong ? last < peakPrice : last > peakPrice)) {
+    proposedSL = last;
+}
+else if (forceSLtoOldTP && st.tp) {
+    proposedSL = +st.tp; 
 } 
-// B. REVERSAL SPECIAL: Đánh đảo chiều cần giữ tối thiểu 15% lãi
-else if (st.tradeCase?.includes("Rev") && pnlPct >= 25) {
-    let revGap = 10; 
+else if (st.tradeCase?.includes("Rev") && pnlPct >= 30) {
+    let revGap = 15; 
     proposedSL = entry * (1 + (isLong ? (pnlPct - revGap) / 100 / leverage : -(pnlPct - revGap) / 100 / leverage));
 }
-// C. LÃI TRUNG BÌNH KHÁ (25% -> 30%)
-else if (pnlPct >= 25 && isConfirmed) { 
-    let miniGap = 15; // Ví dụ: Lãi 28% -> Khóa lãi ở mức +13% PNL
-    proposedSL = entry * (1 + (isLong ? (pnlPct - miniGap) / 100 / leverage : -(pnlPct - miniGap) / 100 / leverage));
+else if (pnlPct >= 50) {
+    let gap = st.isSpecial ? (pnlPct >= 100 ? 30 : 40) : (pnlPct >= 100 ? 35 : (pnlPct >= 70 ? 25 : 30));
+    proposedSL = entry * (1 + (isLong ? (pnlPct - gap) / 100 / leverage : -(pnlPct - gap) / 100 / leverage));
 }
-// D. LÃI TRUNG BÌNH NHỎ (15% -> 25%)
-else if (pnlPct >= 15 && isConfirmed) {
-    let midGap = 10; // Ví dụ: Lãi 18% -> Khóa lãi ở mức +8% PNL
-    proposedSL = entry * (1 + (isLong ? (pnlPct - midGap) / 100 / leverage : -(pnlPct - midGap) / 100 / leverage));
-}
-// E. LÃI NHỎ CHỚM NỞ (10% -> 15%): TUYỆT ĐỐI HÒA HOẶC LÃI NHẸ
+/* ---------- GỘP CÁC TRƯỜNG HỢP CÒN LẠI TỪ 10% ĐẾN 50% ---------- */
 else if (pnlPct >= 10 && isConfirmed) {
-    // Thay vì để SL âm, ép thẳng về Entry + 0.5% PNL để trả phí sàn và giữ tâm lý dương
-    proposedSL = entry * (1 + (isLong ? 0.005 / leverage : -0.005 / leverage)); 
+    let finalPct = 0;
+
+    if (pnlPct >= 25) {
+        finalPct = pnlPct - 15;
+    } 
+    else if (pnlPct >= 15) {
+        finalPct = 0.3; 
+    } 
+    else {
+        finalPct = pnlPct - 15; 
+    }
+
+    proposedSL = entry * (1 + (isLong ? finalPct / 100 / leverage : -finalPct / 100 / leverage));
 }
 
-/* ================= 3. ĐẢM BẢO TP/SL CHỈ TIẾN KHÔNG LÙI ================= */
+/* ================= 3. ĐẢM BẢO SL CHỈ TIẾN KHÔNG LÙI (FIXED) ================= */
 if (proposedSL !== null) {
     let canUpdateSL = false;
     const currentSLVal = +st.currentSL || 0;
@@ -1818,43 +1515,6 @@ if (st.sl) {
 
 let finalSL = bestSL;
 
-// Đồng bộ xử lý khóa chặt TP tiến không lùi
-if (finalTP !== null && finalTP !== undefined) {
-    const currentTPVal = +st.currentTP || 0;
-    let canUpdateTP = false;
-
-    if (isLong) {
-        if (currentTPVal === 0 || finalTP > currentTPVal) canUpdateTP = true;
-    } else {
-        const currentTPValShort = (st.currentTP === 0 || !st.currentTP) ? Infinity : +st.currentTP;
-        if (finalTP < currentTPValShort) canUpdateTP = true;
-    }
-
-    if (!canUpdateTP) {
-        finalTP = st.currentTP || st.tp;
-    } else {
-        st.currentTP = finalTP;
-    }
-}
-
-// Giao cắt chéo so sánh vị trí tương quan giữa SL và TP để ngăn chặn hiện tượng chồng lấn hoặc lùi TP
-if (finalSL && finalTP) {
-    if (isLong) {
-        // Với lệnh Long: Nếu SL tịnh tiến vượt qua cả mức TP hiện tại (SL > TP)
-        if (finalSL >= finalTP) {
-            // Dừng dịch chuyển, khóa kết quả chốt lời cao nhất tại mức TP nếu TP tối ưu hơn, ngược lại nếu SL kéo cao hơn thì ép TP bằng SL
-            finalTP = finalSL;
-        }
-    } else {
-        // Với lệnh Short: Nếu SL tịnh tiến rơi sâu qua cả mức TP hiện tại (SL < TP)
-        if (finalSL <= finalTP) {
-            // Ép điểm đích về cùng một vùng giá chặn an toàn nhất
-            finalTP = finalSL;
-        }
-    }
-}
-
-
                 /* ================= 4. GỬI LỆNH AMEND SL (TRAILING THẬT) ================= */
 if (finalSL && st.slAlgoId) {
 
@@ -1874,20 +1534,24 @@ if (finalSL && st.slAlgoId) {
         if (!st.lastTrail || Date.now() - st.lastTrail > 5000) {
 
             try {
-                await okxApiRequest('/api/v5/trade/amend-algos', 'POST', {
+                const amendRes = await okxApiRequest('/trade/amend-algos', 'POST', {
                     instId: instId,
                     algoId: st.slAlgoId,          // QUAN TRỌNG
                     newSlTriggerPx: finalSL.toString(),
                     newSlOrdPx: "-1"
                 });
 
-                st.currentSL = finalSL;
-                st.lastTrail = Date.now();
+                if (amendRes?.code === '0') {
+                    st.currentSL = finalSL;
+                    st.lastTrail = Date.now();
 
-                log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
+                    if (typeof log === 'function') log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
+                    else console.log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
+                }
 
             } catch (e) {
-                log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
+                if (typeof log === 'function') log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
+                else console.log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
             }
 
         }
@@ -1895,14 +1559,16 @@ if (finalSL && st.slAlgoId) {
 }
 
                 /* ================= 4.1 SAFETY CHECK & API ERROR PREVENTION ================= */
-                const safety = last * 0.012; // Giảm safety xuống 0.5% để SL linh hoạt hơn
+                const safety = last * 0.005; // Giảm safety xuống 0.5% để SL linh hoạt hơn
                 if (isLong && finalSL >= (last - safety)) finalSL = last - safety;
-                if (isShort && finalSL <= (last + safety)) finalSL = last + safety;
+                if (!isLong && finalSL <= (last + safety)) finalSL = last + safety;
 
                 /* ================= 5. LÀM TRÒN & CHECK THỰC TẾ (FIXED) ================= */
                 const instInfo = await okxPublic(`/public/instruments?instType=SWAP&instId=${instId}`);
-                const tick = +instInfo?.data?.[0]?.tickSz || 0.00000001;
-                const round = v => Math.round(v / tick) * tick;
+                const tickStr = instInfo?.data?.[0]?.tickSz || "0.00000001";
+                const tick = +tickStr;
+                const pPrec = tickStr.includes('.') ? tickStr.split('.')[1].length : 0;
+                const round = v => (Math.round(v / tick) * tick).toFixed(pPrec);
 
                 finalSL = round(finalSL);
                 const roundedTP = finalTP ? round(finalTP) : null;
@@ -1916,8 +1582,8 @@ if (finalSL && st.slAlgoId) {
                 const tpChanged = roundedTP !== st.currentTP;
                 // FIX: Dời SL khi giá trị mới chênh lệch ít nhất 1 tickSz
                 const slMoved = isLong 
-                    ? (finalSL > (st.currentSL || 0) + tick) 
-                    : (isShort && finalSL < (st.currentSL || Infinity) - tick && st.currentSL !== 0);
+                    ? (+finalSL > (+st.currentSL || 0) + tick) 
+                    : (!isLong && +finalSL < (+st.currentSL || Infinity) - tick && st.currentSL !== 0);
 
                 /* ================= 6. VÒNG LẶP HỦY DIỆT & CẬP NHẬT ================= */
                 if (orders.length !== 1 || tpChanged || slMoved) {
@@ -1955,17 +1621,14 @@ if (finalSL && st.slAlgoId) {
                     if (res?.code === '0') {
                         st.currentTP = roundedTP;
                         st.currentSL = finalSL;
+                        st.slAlgoId = res.data?.[0]?.algoId || st.slAlgoId;
                         st.lastTrail = Date.now();
                         
-                        // Tính toán số tiền lãi/lỗ thực tế (giả định biến p là đối tượng position của OKX)
-const pnlAmount = parseFloat(p.upl || 0); 
-const pnlSign = pnlAmount >= 0 ? '+' : '';
-
-const logMsg = `🔄 **BOT TÂN DỜI TP/SL: ${instId}**\n` +
-               `💰 PNL: ${pnlPct.toFixed(2)}% (x${leverage})\n` +
-               `💵 Lợi nhuận: ${pnlSign}${pnlAmount.toFixed(2)} USDT\n` +
-               `🎯 TP: ${roundedTP || 'Gồng trend (Đã gỡ TP)'}\n` +
-               `🛡️ SL: ${finalSL} ${forceSLtoOldTP ? '(Đã khóa TP cũ)' : ''}`;
+                        const logMsg = `🔄 **SIÊU BOT TÂN DỜI TP/SL: ${instId}**\n` +
+                                     `💰 PNL: ${pnlPct.toFixed(2)}% (x${leverage})\n` +
+                                     `🎯 TP: ${roundedTP || 'Gồng trend (Đã gỡ TP)'}\n` +
+                                     `🛡️ SL: ${finalSL} ${forceSLtoOldTP ? '(Đã khóa TP cũ)' : ''}`;
+                        
                         if (typeof sendTelegram === 'function') sendTelegram(logMsg).catch(() => {});
                         console.log(`✅ [SUCCESS] ${instId}: Đã dời SL đến ${finalSL}`);
                     }
@@ -1979,120 +1642,133 @@ const logMsg = `🔄 **BOT TÂN DỜI TP/SL: ${instId}**\n` +
 }
 
 
-/* ================== HÀM LƯU TRỮ DỮ LIỆU (FIXED LỖI LỆNH MA) ================== */
+
+
+/* ================== HÀM LƯU TRỮ DỮ LIỆU ================== */
 function saveOrders() {
     try {
-        if (typeof activeOrders === 'undefined') return;
+        // ===== FIX LOCALSTORAGE CONFLICT (ĐỒNG BỘ THEO DỮ LIỆU THỰC TẾ) =====
+        const oldActive = JSON.parse(
+            localStorage.getItem('okx_active_orders') || '{}'
+        );
 
-        // Chỉ lưu chính xác những vị thế thực sự đang tồn tại trong RAM
-        localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+        // Thay vì gộp mù quáng (khiến lệnh cũ không mất đi), 
+        // ta chỉ giữ lại những lệnh thực sự đang tồn tại trong biến RAM 'activeOrders'
+        const mergedActive = {};
 
-        if (typeof tradeHistory !== 'undefined') {
-            localStorage.setItem('okx_trade_history', JSON.stringify(tradeHistory));
+        for (const k in activeOrders) {
+            // Cập nhật thông tin mới nhất vào bản ghi, giữ lại thuộc tính cũ nếu cần
+            mergedActive[k] = {
+                ordType: 'oco',
+                ...(oldActive[k] || {}),
+                ...(activeOrders[k] || {})
+            };
         }
 
-        console.log("💾 Đã đồng bộ chính xác trạng thái lệnh thực tế.");
+        // Lưu bản ghi đã được dọn dẹp (chỉ chứa các lệnh thực tế đang chạy)
+        localStorage.setItem(
+            'okx_active_orders',
+            JSON.stringify(mergedActive)
+        );
+
+        // Lịch sử giao dịch giữ nguyên hành vi cũ
+        localStorage.setItem(
+            'okx_trade_history',
+            JSON.stringify(tradeHistory)
+        );
+
+        // Đồng bộ lại RAM - Đảm bảo RAM không chứa các "lệnh ma" đã bị xóa ở trên
+        activeOrders = mergedActive;
+
+        console.log("💾 Đã lưu trạng thái lệnh và lịch sử vào máy.");
     } catch (e) {
-        console.error("❌ Lỗi saveOrders:", e);
+        console.error("❌ Không thể lưu dữ liệu vào LocalStorage:", e);
     }
 }
 
-/* ================== HÀM LẤY PNL 24H TỪ OKX (FIXED) ================== */
-async function updatePNL24h() {
-    // FIX: Bỏ !isTrading để PnL luôn cập nhật kể cả khi bấm Dừng Auto Trade
-    if (typeof apiKey !== 'undefined' && !apiKey) return;
 
+/* ================== HÀM LẤY PNL 24H TỪ OKX ================== */
+async function updatePNL24h() {
+    if (!isTrading || !apiKey) return;
     try {
-        // Lấy danh sách lệnh đã khớp 24h qua
         const res = await okxApiRequest('/trade/orders-history?instType=SWAP&state=filled&limit=100');
-        
         if (res && res.code === '0' && Array.isArray(res.data)) {
             let totalWin = 0, totalLoss = 0, totalPnlValue = 0;
-            
             tradeHistory = res.data.map(order => {
                 const pnl = parseFloat(order.pnl || 0);
-                if (pnl > 0) totalWin++; 
-                else if (pnl < 0) totalLoss++;
-                
+                if (pnl > 0) totalWin++; else if (pnl < 0) totalLoss++;
                 totalPnlValue += pnl;
                 return {
-                    time: parseInt(order.uTime || Date.now()), 
-                    instId: order.instId,
-                    side: order.side, 
-                    entry: parseFloat(order.avgPx || 0), 
-                    exit: parseFloat(order.fillPx || 0), 
-                    pnl: pnl
+                    time: parseInt(order.uTime), instId: order.instId,
+                    side: order.side, entry: order.avgPx, exit: order.fillPx, pnl: pnl
                 };
             });
 
-            // Cập nhật lên UI Dashboard
+            // Cập nhật thống kê cơ bản
             const total = totalWin + totalLoss;
-            const elTotal = document.getElementById('totalOrders');
-            const elWin = document.getElementById('winOrders');
-            const elLoss = document.getElementById('lossOrders');
-            const elWinRate = document.getElementById('winRate');
+            document.getElementById('totalOrders').innerText = total;
+            document.getElementById('winOrders').innerText = totalWin;
+            document.getElementById('lossOrders').innerText = totalLoss;
+            document.getElementById('winRate').innerText = (total > 0 ? ((totalWin/total)*100).toFixed(1) : 0) + '%';
             const pnlEl = document.getElementById('totalPnL');
+            pnlEl.innerText = totalPnlValue.toFixed(2) + ' USDT';
+            pnlEl.className = totalPnlValue >= 0 ? 'up' : 'down';
 
-            if (elTotal) elTotal.innerText = total;
-            if (elWin) elWin.innerText = totalWin;
-            if (elLoss) elLoss.innerText = totalLoss;
-            if (elWinRate) elWinRate.innerText = (total > 0 ? ((totalWin / total) * 100).toFixed(1) : '0.0') + '%';
-            
-            if (pnlEl) {
-                pnlEl.innerText = (totalPnlValue >= 0 ? '+' : '') + totalPnlValue.toFixed(2) + ' USDT';
-                pnlEl.className = totalPnlValue >= 0 ? 'up' : 'down';
+            // --- ĐOẠN HIỂN THỊ VỐN & BẢO VỆ ---
+            const capStatus = document.getElementById('capitalStatus');
+            if (capStatus) {
+                const orders = Object.values(activeOrders || {});
+                let usedCap = 0;
+                let protectedCount = 0;
+                orders.forEach(o => {
+                    usedCap += parseFloat(o.capital || 0);
+                    if (o.isTrailed || o.sl || o.tp) protectedCount++;
+                });
+
+                // Lấy số dư thực tế tính 5%
+                const balRes = await okxApiRequest('/account/balance?ccy=USDT');
+                const availBal = parseFloat(balRes?.data?.[0]?.details?.find(d => d.ccy === 'USDT')?.availBal || 0);
+                const lockedCap = availBal * 0.05;
+
+                capStatus.innerHTML = `
+                    <div style="margin-top: 8px; line-height: 1.6;">
+                        <div>💰 <b>Vốn khóa vòng (5%):</b> ${lockedCap.toFixed(2)} USDT</div>
+                        <div>🛡️ <b>Đã bảo vệ:</b> ${protectedCount}/${orders.length} lệnh</div>
+                    </div>
+                `;
             }
-
-            // Gọi hàm cập nhật hiển thị vốn & bảo vệ
-            await renderCapitalInfo();
         }
-    } catch (e) { 
-        console.error('Lỗi PNL 24h:', e); 
-    }
+    } catch (e) { console.error('Lỗi PNL:', e); }
 }
 
 async function updatePnL() {
+    // Không cần isTrading – PnL vẫn cập nhật khi đang giữ lệnh
     await updatePNL24h();
+
     if (typeof renderHistory === 'function') {
         renderHistory();
     }
 }
 
-/* ================== HÀM HIỂN THỊ VỐN & BẢO VỆ (FIXED LẤY SỐ DƯ OKX) ================== */
-async function renderCapitalInfo() {
-    const capStatus = document.getElementById('capitalStatus');
-    if (!capStatus) return;
 
-    const activeOrdersObj = typeof activeOrders !== 'undefined' ? activeOrders : {};
-    const orders = Object.values(activeOrdersObj);
-    const totalPos = orders.length;
+
+function renderCapitalInfo() {
+    const container = document.getElementById('capitalStatus');
+    if (!container) return;
+
+    const orders = Object.values(activeOrders || {});
+    const total = orders.length;
 
     let protectedCount = 0;
-    orders.forEach(o => {
-        // Lệnh được tính là bảo vệ nếu có SL/TP hoặc đang Trailing
-        if (o?.isTrailed || o?.sl || o?.tp || o?.currentSL) protectedCount++;
-    });
 
-    // FIX: Lấy chuẩn Vốn chủ sở hữu (Equity) từ OKX
-    let realBalance = 0;
-    try {
-        const balRes = await okxApiRequest('/account/balance?ccy=USDT');
-        if (balRes?.code === '0' && balRes?.data?.[0]) {
-            const accData = balRes.data[0];
-            const usdtDetail = accData.details?.find(d => d.ccy === 'USDT');
-            // Lấy theo eq (Equity) hoặc availEq / totalEq
-            realBalance = parseFloat(usdtDetail?.eq || accData.totalEq || usdtDetail?.availBal || 0);
-        }
-    } catch (balErr) {
-        console.warn('Lỗi lấy số dư tài khoản:', balErr);
+    for (const o of orders) {
+        if (o.sl || o.tp) protectedCount++;
     }
 
-    const lockedCap = realBalance * 0.05;
-
-    capStatus.innerHTML = `
-        <div style="margin-top: 8px; line-height: 1.6;">
-            <div>💰 <b>Vốn khóa vòng (5%):</b> ${lockedCap.toFixed(2)} USDT</div>
-            <div>🛡️ <b>Đã bảo vệ:</b> ${protectedCount}/${totalPos} lệnh</div>
+    container.innerHTML = `
+        <div style="background:rgba(34,197,94,0.12);padding:10px;border-radius:6px">
+            <b>📦 Tổng lệnh:</b> ${total}<br/>
+            <b>🛡️ Đã bảo vệ (SL/TP):</b> ${protectedCount}/${total}
         </div>
     `;
 }
