@@ -1283,82 +1283,91 @@ if (pnlPct <= -20) {
 }
 }
 
-               /* ================= 1. TP ENGINE (DYNAMIC TARGET + BOLLINGER / R-S EXIT - 6 STATES) ================= */
-let forceSLtoOldTP = false;
+              /* ================= 1. TP & BUFFER (ADAPTIVE SHADOW TP + CHỐNG NHIỄU EXHAUSTION) ================= */
 
 if (!st.tpBuffer) st.tpBuffer = [];
+if (!st.tpBuffer.length) st.tpBuffer[0] = last;
+
+// Cập nhật giá trị vào cuối mảng
 st.tpBuffer.push(last);
 if (st.tpBuffer.length > 120) st.tpBuffer.shift();
 
-if (st.peakPrice === undefined) st.peakPrice = last;
-if (isLong && last > st.peakPrice) st.peakPrice = last;
-if (!isLong && last < st.peakPrice) st.peakPrice = last;
+// FIX LỖI 1: Xác định peakPrice động trực tiếp dựa trên toàn bộ mảng thay vì cố định lưu vào index 0 gây lỗi tụt đỉnh khi shift
+const peakPrice = isLong ? Math.max(...st.tpBuffer) : Math.min(...st.tpBuffer);
 
-// Lấy ATR hiện tại (mặc định fallback 0.5% nếu chưa truyền ATR vào st)
-const currentAtr = st.atr || (last * 0.005); 
+// KHAI BÁO TẠI ĐÂY ĐỂ TRÁNH LỖI KHỐI DƯỚI KHÔNG TRUY CẬP ĐƯỢC KHI PNL < TPTHRESHOLD
+let finalTP = st.tp;
+let forceSLtoOldTP = false; 
 
-// Xác định mục tiêu Cản ưu tiên (Resistance / Support)
-const mainTarget = isLong ? st.resistPrice : st.supportPrice;
-const bbBound = isLong ? st.upperBB : st.lowerBB;
-
-let dynamicTP = st.tp;
-
-// 1. TÍNH MỤC TIÊU TP ĐỘNG DỰA TRÊN CẢN LÀM ƯU TIÊN HÀNG ĐẦU
-if (isLong) {
-    if (mainTarget && mainTarget > last) dynamicTP = mainTarget;
-    else if (bbBound && bbBound > last) dynamicTP = bbBound;
-} else {
-    if (mainTarget && mainTarget < last) dynamicTP = mainTarget;
-    else if (bbBound && bbBound < last) dynamicTP = bbBound;
-}
-
-if (st.currentTP) {
-    dynamicTP = isLong ? Math.max(dynamicTP, st.currentTP) : Math.min(dynamicTP, st.currentTP);
-}
-st.currentTP = dynamicTP;
-let finalTP = dynamicTP;
-
-// 2. KÍCH HOẠT CHỐT LỜI ĐA TRẠNG THÁI (PNL >= 15-20%)
-let tpThreshold = st.tradeCase?.includes("Trend") ? 20 : 15;
+let tpThreshold = 10; 
 
 if (pnlPct >= tpThreshold) {
     
-    // Tín hiệu kiệt sức chuẩn hóa (Xác nhận 3 tick liên tiếp giảm/tăng để loại bỏ nhiễu)
-    const bufLen = st.tpBuffer?.length || 0;
-    const p1 = bufLen >= 1 ? st.tpBuffer[bufLen - 1] : last;
-    const p2 = bufLen >= 2 ? st.tpBuffer[bufLen - 2] : last;
-    const p3 = bufLen >= 3 ? st.tpBuffer[bufLen - 3] : last;
+    const maxInBuffer = Math.max(...st.tpBuffer); 
+    const minInBuffer = Math.min(...st.tpBuffer); 
+    const bufferRange = maxInBuffer - minInBuffer;
     
-    const exhaustion = isLong ? (p1 < p2 && p2 < p3) : (p1 > p2 && p2 > p3);
+    let exhaustion = false;
+    const p1 = st.tpBuffer[st.tpBuffer.length - 1] || last;
+    const p2 = st.tpBuffer[st.tpBuffer.length - 2] || last;
+    const candleTrend = isLong ? (p1 < p2) : (p1 > p2);
 
-    // Tính khoảng cách từ giá hiện tại đến Cản chính (Resistance / Support)
-    const distToTarget = mainTarget ? Math.abs(mainTarget - last) : Infinity;
-
-    // Kiểm tra trạng thái Breakout thất bại (Vượt BB/Cản rồi quay ngược vào trong)
-    const hasBrokenOut = isLong 
-        ? ((bbBound && st.peakPrice > bbBound) || (mainTarget && st.peakPrice > mainTarget))
-        : ((bbBound && st.peakPrice < bbBound) || (mainTarget && st.peakPrice < mainTarget));
-        
-    const pulledBack = isLong 
-        ? ((bbBound && last < bbBound) || (mainTarget && last < mainTarget))
-        : ((bbBound && last > bbBound) || (mainTarget && last > mainTarget));
-
-    const isFailedBreakout = hasBrokenOut && pulledBack && exhaustion;
-
-    /* 🟣 TRƯỜNG HỢP 6: PARABOLIC RUN (PNL > 80%) -> BỎ TP, GIAO TOÀN BỘ CHO TRAILING SL */
-    if (pnlPct >= 80) {
-        console.log(`🟣 [STATE 6 - PARABOLIC RUN] ${instId} Đạt PNL ${pnlPct.toFixed(2)}%. Hủy TP để gồng sóng siêu pump bằng Trailing SL!`);
-        finalTP = null;
-        st.currentTP = null;
-        
-        const msg = `🟣 **SIÊU BOT TÂN UNLOCK TP (STATE 6 - PARABOLIC RUN): ${instId}**\n` +
-                    `🚀 PNL cực đại: ${pnlPct.toFixed(2)}%\n` +
-                    `📌 Hành động: Đã gỡ bỏ TP target. Giao toàn bộ vị thế cho Trailing SL gồng trend!`;
-        if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
+    // FIX LỖI 3: SIẾT CHẶT LOGIC TP KHI GIÁ VƯỢT BIÊN BOLLINGER BANDS VÀ RÚT RÂU
+    let isOutBBAndReversal = false;
+    if (typeof upperBB !== 'undefined' && typeof lowerBB !== 'undefined') {
+        if (isLong && p2 > upperBB && last < upperBB) {
+            // Lệnh Long: Giá nến trước ở ngoài biên trên, giá hiện tại chui ngược vào trong (Rút râu suy yếu)
+            isOutBBAndReversal = true;
+        } else if (!isLong && p2 < lowerBB && last > lowerBB) {
+            // Lệnh Short: Giá nến trước ở ngoài biên dưới, giá hiện tại giật ngược vào trong
+            isOutBBAndReversal = true;
+        }
     }
-    /* 🔴 TRƯỜNG HỢP 4: BREAKOUT THẤT BẠI -> MARKET CLOSE NGAY */
-    else if (isFailedBreakout) {
-        console.log(`🔴 [STATE 4 - FAILED BREAKOUT] ${instId} Breakout thất bại + Kiệt sức. Market Close ngay! PNL: ${pnlPct.toFixed(2)}%`);
+
+    if (isOutBBAndReversal) {
+        // Nếu đã phá biên BB mà rút râu + dòng tiền yếu (volSpread giảm hoặc nến giảm) -> Kích hoạt kiệt sức lập tức để siết TP
+        exhaustion = true; 
+    } else if (bufferRange > 0) {
+        if (isLong && last >= (maxInBuffer - bufferRange * 0.05)) {
+            exhaustion = candleTrend;
+        } else if (!isLong && last <= (minInBuffer + bufferRange * 0.05)) {
+            exhaustion = candleTrend;
+        } else if (pnlPct < 30) {
+            exhaustion = isLong 
+                ? (last < (maxInBuffer - bufferRange * 0.10) && candleTrend) 
+                : (last > (minInBuffer + bufferRange * 0.10) && candleTrend);
+        } else {
+            finalTP = null; 
+            forceSLtoOldTP = true;
+            
+            exhaustion = isLong 
+                ? (last < (maxInBuffer - bufferRange * 0.30) && candleTrend) 
+                : (last > (minInBuffer + bufferRange * 0.30) && candleTrend);
+        }
+    } else {
+        exhaustion = candleTrend;
+    }
+
+    // Tính % sụt giảm PNL từ đỉnh thực tế (Không lo bị mất đỉnh khi mảng shift)
+    const dropFromPeak = isLong
+        ? (peakPrice - last) / peakPrice * 100 * leverage
+        : (last - peakPrice) / peakPrice * 100 * leverage;
+
+    // FIX LỖI 2: Hạ dropTrigger xuống mức cực thấp (chỉ 1.5% đến 2%) khi phát hiện tín hiệu rút râu ngoài biên BB để siết chặt điểm chốt
+    const dropTrigger = isOutBBAndReversal ? 1.5 : (
+    pnlPct >= 150 ? 5 :
+    pnlPct >= 100 ? 8 :
+    pnlPct >= 60  ? 10 :
+    pnlPct >= 30  ? 15 : 20
+);
+
+    // Lệnh chốt Market từ đỉnh
+    if (
+        dropFromPeak >= dropTrigger && 
+        (isLong ? last < peakPrice : last > peakPrice) && 
+        exhaustion
+    ) {
+        console.log(`🎯 [BB & EXHAUSTION TP KÍCH HOẠT] ${instId} chốt tại PNL: ${pnlPct.toFixed(2)}% (Sụt từ đỉnh biên BB: ${dropFromPeak.toFixed(2)}%)`);
 
         const closeRes = await okxApiRequest('/trade/order', 'POST', {
             instId,
@@ -1370,124 +1379,58 @@ if (pnlPct >= tpThreshold) {
         });
 
         if (closeRes?.code === '0') {
-            const msg = `🔴 **SIÊU BOT TÂN TP (STATE 4 - BREAKOUT THẤT BẠI): ${instId}**\n` +
+            const msg = `💰 **SIÊU BOT TÂN CHỐT TP (BIÊN BB & DÒNG TIỀN KIỆT SỨC): ${instId}**\n` +
                         `📈 PNL Chốt: ${pnlPct.toFixed(2)}%\n` +
-                        `💵 Giá đóng: ${last}\n` +
-                        `🛡️ Lý do: Giá vọt Cản/BB thất bại và bị cản lực rướn.`;
+                        `🏆 Siết chặt lợi nhuận thành công khi giá rút râu ngoài dải Bollinger Bands.`;
 
             if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
             if (typeof fillerCooldown !== 'undefined') fillerCooldown[instId] = Date.now();
             delete activeOrders[instId];
-            delete st.currentTP;
-            delete st.peakPrice;
             localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
             continue;
         }
     }
-    /* 🟢 TRƯỜNG HỢP 1 & 5: TREND KHỎE HOẶC CÒN CÁCH XA CẢN (> 1.0 ATR) -> GIỮ TP GỐC */
-    else if (!exhaustion || distToTarget > currentAtr * 1.0) {
-        console.log(`🟢 [STATE 1/5 - STRONG TREND / FAR TARGET] ${instId} Trend khỏe hoặc Cản còn xa (> 1.0 ATR). Giữ TP tại: ${st.currentTP}`);
-    }
-    /* 🟠 TRƯỜNG HỢP 3: KIỆT SỨC SÁT CẢN (CÁCH < 0.3 ATR HOẶC CHẠM BB) -> DỜI TP THEO ĐỈNH VỪA TẠO + 0.2 ATR */
-    else if (exhaustion && (distToTarget < currentAtr * 0.3 || (bbBound && (isLong ? last >= bbBound : last <= bbBound)))) {
-        const oldTP = st.currentTP;
-        finalTP = isLong 
-            ? Math.max(st.peakPrice, last) + (currentAtr * 0.2) 
-            : Math.min(st.peakPrice, last) - (currentAtr * 0.2);
-            
-        // Kích hoạt cập nhật thực tế lên sàn OKX khi TP biến động
-        if (Math.abs(finalTP - (oldTP || 0)) > (currentAtr * 0.05)) {
-            console.log(`🟠 [STATE 3 - NEAR TARGET EXHAUSTION] ${instId} Kiệt sức sát cản/BB. Dời TP vượt Đỉnh/Đáy vừa tạo 0.2 ATR.`);
-            st.currentTP = finalTP;
-
-            const msg = `🟠 **SIÊU BOT TÂN AMEND TP (STATE 3 - KIỆT SỨC SÁT CẢN): ${instId}**\n` +
-                        `📈 PNL hiện tại: ${pnlPct.toFixed(2)}%\n` +
-                        `🎯 Dời TP mới: ${finalTP.toFixed(5)}\n` +
-                        `📌 Lý do: Kiệt sức gần Cản/BB, kéo TP sát đỉnh peak để rướn hit nhịp cuối.`;
-            if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
-        }
-    }
-    /* 🟡 TRƯỜNG HỢP 2: KIỆT SỨC TRONG DƯ ĐỊA CHUẨN (CÁCH CẢN 0.3 ~ 1.0 ATR) -> DỜI TP LÊN NẰM TRONG VÙNG CẢN */
-    else if (exhaustion && distToTarget >= currentAtr * 0.3 && distToTarget <= currentAtr * 1.0) {
-        const oldTP = st.currentTP;
-        const targetTP = mainTarget || bbBound || (isLong ? last + currentAtr : last - currentAtr);
-        finalTP = isLong 
-            ? Math.min(targetTP, last + currentAtr * 0.8) 
-            : Math.max(targetTP, last - currentAtr * 0.8);
-            
-        // Kích hoạt cập nhật thực tế lên sàn OKX khi TP biến động
-        if (Math.abs(finalTP - (oldTP || 0)) > (currentAtr * 0.05)) {
-            console.log(`🟡 [STATE 2 - EXHAUSTION WITH SPACE] ${instId} Kiệt sức trong dư địa 0.3-1.0 ATR. Dời TP tiếp cận vùng Cản/BB.`);
-            st.currentTP = finalTP;
-
-            const msg = `🟡 **SIÊU BOT TÂN AMEND TP (STATE 2 - KIỆT SỨC CÒN DƯ ĐỊA): ${instId}**\n` +
-                        `📈 PNL hiện tại: ${pnlPct.toFixed(2)}%\n` +
-                        `🎯 Dời TP mới: ${finalTP.toFixed(5)}\n` +
-                        `📌 Lý do: Kiệt sức nhẹ (dư địa 0.3-1 ATR), dời TP đón vùng Cản/BB.`;
-            if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
-        }
-    }
+} else {
+    finalTP = st.currentTP || st.tp;
 }
 
-/* ================= 2. SL TRAILING & BUFFER (GỘP TỐI ƯU) ================= */
+/* ================= 2. SL TRAILING & BUFFER (BẢO VỆ CHẶT CHẼ THEO TỪNG CẤP ĐỘ) ================= */
 let proposedSL = null; 
 const holdTimeMins = (Date.now() - st.ts) / 60000; 
+
+// CHẶN QUÉT NON: Xác nhận lệnh đã "vào form" ổn định
 const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10; 
 
-// CHỐNG BỐC HƠI PNL: DỜI SL THEO ĐỈNH (TRAILING STOP DỰA TRÊN DROPTRIGGER)
-const peakPrice = st.peakPrice || last;
-const dropFromPeak = isLong
-    ? (peakPrice - last) / peakPrice * 100 * leverage
-    : (last - peakPrice) / peakPrice * 100 * leverage;
-
-const dropTrigger =
-    (st.tradeCase?.includes("Trend") || st.isSpecial) 
-        ? (pnlPct >= 150 ? 30 : (pnlPct >= 100 ? 25 : 20))
-        : (st.tradeCase?.includes("Rev")
-            ? (pnlPct >= 60 ? 12 : 8)
-            : (pnlPct >= 100 ? 20 : (pnlPct >= 60 ? 15 : 10)));
-
-/* ---------- BỔ SUNG: PHANH KHẨN CẤP THIÊN NGA ĐEN (PUMP & DUMP / FLASH DUMP) ---------- */
-const bufferLen = st.tpBuffer?.length || 0;
-const recentPrice = bufferLen >= 6 ? st.tpBuffer[bufferLen - 6] : peakPrice;
-const flashDropPct = isLong
-    ? (recentPrice - last) / recentPrice * 100 * leverage
-    : (last - recentPrice) / recentPrice * 100 * leverage;
-
-const isBlackSwan = (pnlPct >= 15 && flashDropPct >= 12) || (dropFromPeak >= 20 && pnlPct < 30);
-
-if (isBlackSwan) {
-    proposedSL = last;
-}
-else if (pnlPct >= 30 && dropFromPeak >= dropTrigger && (isLong ? last < peakPrice : last > peakPrice)) {
-    proposedSL = last;
-}
-else if (forceSLtoOldTP && st.tp) {
-    proposedSL = +st.tp; 
+// A. KHÓA LÃI LỚN KHI PNL >= 30% (XỬ LÝ LỖI THUA NGƯỢC)
+if (pnlPct >= 30) {
+    // Ưu tiên 1: Dời SL lên mốc TP cũ nếu có
+    if (forceSLtoOldTP && st.tp) {
+        proposedSL = +st.tp;
+    } else {
+        // Ưu tiên 2: Nếu không có TP cũ, ép khóa tối thiểu 15% PNL lãi (Giữ Gap tối đa 15% so với giá chạy)
+        let safeGap = 15;
+        proposedSL = entry * (1 + (isLong ? (pnlPct - safeGap) / 100 / leverage : -(pnlPct - safeGap) / 100 / leverage));
+    }
 } 
-else if (st.tradeCase?.includes("Rev") && pnlPct >= 30) {
-    let revGap = 15; 
+// B. REVERSAL SPECIAL: Đánh đảo chiều cần giữ tối thiểu 15% lãi
+else if (st.tradeCase?.includes("Rev") && pnlPct >= 25) {
+    let revGap = 10; 
     proposedSL = entry * (1 + (isLong ? (pnlPct - revGap) / 100 / leverage : -(pnlPct - revGap) / 100 / leverage));
 }
-else if (pnlPct >= 50) {
-    let gap = st.isSpecial ? (pnlPct >= 100 ? 30 : 40) : (pnlPct >= 100 ? 35 : (pnlPct >= 70 ? 25 : 30));
-    proposedSL = entry * (1 + (isLong ? (pnlPct - gap) / 100 / leverage : -(pnlPct - gap) / 100 / leverage));
+// C. LÃI TRUNG BÌNH KHÁ (25% -> 30%)
+else if (pnlPct >= 25 && isConfirmed) { 
+    let miniGap = 15; // Ví dụ: Lãi 28% -> Khóa lãi ở mức +13% PNL
+    proposedSL = entry * (1 + (isLong ? (pnlPct - miniGap) / 100 / leverage : -(pnlPct - miniGap) / 100 / leverage));
 }
-/* ---------- GỘP CÁC TRƯỜNG HỢP CÒN LẠI TỪ 10% ĐẾN 50% ---------- */
+// D. LÃI TRUNG BÌNH NHỎ (15% -> 25%)
+else if (pnlPct >= 15 && isConfirmed) {
+    let midGap = 10; // Ví dụ: Lãi 18% -> Khóa lãi ở mức +8% PNL
+    proposedSL = entry * (1 + (isLong ? (pnlPct - midGap) / 100 / leverage : -(pnlPct - midGap) / 100 / leverage));
+}
+// E. LÃI NHỎ CHỚM NỞ (10% -> 15%): TUYỆT ĐỐI HÒA HOẶC LÃI NHẸ
 else if (pnlPct >= 10 && isConfirmed) {
-    let finalPct = 0;
-
-    if (pnlPct >= 25) {
-        finalPct = pnlPct - 15;
-    } 
-    else if (pnlPct >= 15) {
-        finalPct = 0.3; 
-    } 
-    else {
-        finalPct = pnlPct - 15; 
-    }
-
-    proposedSL = entry * (1 + (isLong ? finalPct / 100 / leverage : -finalPct / 100 / leverage));
+    // Thay vì để SL âm, ép thẳng về Entry + 0.5% PNL để trả phí sàn và giữ tâm lý dương
+    proposedSL = entry * (1 + (isLong ? 0.005 / leverage : -0.005 / leverage)); 
 }
 
 /* ================= 3. ĐẢM BẢO SL CHỈ TIẾN KHÔNG LÙI (FIXED) ================= */
