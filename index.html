@@ -1062,16 +1062,16 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
       }
     }
 
-    /* ========= BƯỚC 6: MASTERFLOW ========= */
+   /* ========= BƯỚC 6: MASTERFLOW ========= */
     if (isTrading) {
         const qualityCandidates = [...(topPump || []), ...(topDump || [])]
-            .filter(c => c && c.instId && !activeOrders[c.instId] && !entryCooldown[c.instId] && passesEntryFilter(c));
+            .filter(c => c && c.instId && !activeOrders[c.instId]);
 
         console.log('[ENTRY FILTER]', {
           totalTop5: [...topPump, ...topDump].length,
           passed: qualityCandidates.length,
           rejected: [...topPump, ...topDump]
-            .filter(c => !passesEntryFilter(c))
+            .filter(c => !c || !c.instId || activeOrders[c.instId])
             .map(c => ({
               instId: c.instId,
               side: c.side,
