@@ -2213,47 +2213,77 @@ function saveOrders() {
 }
 
 
-/* ================== HÀM LẤY PNL 24H TỪ OKX ================== */
+/* ================== HÀM LẤY PNL 24H TỪ OKX (FIXED) ================== */
 async function updatePNL24h() {
-    if (!isTrading || !apiKey) return;
+    // FIX LỖI 1: Bỏ !isTrading để PnL vẫn cập nhật khi bấm "Dừng Auto Trade"
+    if (typeof apiKey !== 'undefined' && !apiKey) return;
+
     try {
         const res = await okxApiRequest('/trade/orders-history?instType=SWAP&state=filled&limit=100');
+        
         if (res && res.code === '0' && Array.isArray(res.data)) {
             let totalWin = 0, totalLoss = 0, totalPnlValue = 0;
+            
+            // Khởi tạo/cập nhật mảng lịch sử giao dịch
             tradeHistory = res.data.map(order => {
                 const pnl = parseFloat(order.pnl || 0);
-                if (pnl > 0) totalWin++; else if (pnl < 0) totalLoss++;
+                if (pnl > 0) totalWin++; 
+                else if (pnl < 0) totalLoss++;
+                
                 totalPnlValue += pnl;
                 return {
-                    time: parseInt(order.uTime), instId: order.instId,
-                    side: order.side, entry: order.avgPx, exit: order.fillPx, pnl: pnl
+                    time: parseInt(order.uTime || Date.now()), 
+                    instId: order.instId,
+                    side: order.side, 
+                    entry: parseFloat(order.avgPx || 0), 
+                    exit: parseFloat(order.fillPx || 0), 
+                    pnl: pnl
                 };
             });
 
-            // Cập nhật thống kê cơ bản
+            // Cập nhật thống kê lên UI
             const total = totalWin + totalLoss;
-            document.getElementById('totalOrders').innerText = total;
-            document.getElementById('winOrders').innerText = totalWin;
-            document.getElementById('lossOrders').innerText = totalLoss;
-            document.getElementById('winRate').innerText = (total > 0 ? ((totalWin/total)*100).toFixed(1) : 0) + '%';
+            const elTotal = document.getElementById('totalOrders');
+            const elWin = document.getElementById('winOrders');
+            const elLoss = document.getElementById('lossOrders');
+            const elWinRate = document.getElementById('winRate');
             const pnlEl = document.getElementById('totalPnL');
-            pnlEl.innerText = totalPnlValue.toFixed(2) + ' USDT';
-            pnlEl.className = totalPnlValue >= 0 ? 'up' : 'down';
+
+            if (elTotal) elTotal.innerText = total;
+            if (elWin) elWin.innerText = totalWin;
+            if (elLoss) elLoss.innerText = totalLoss;
+            if (elWinRate) elWinRate.innerText = (total > 0 ? ((totalWin / total) * 100).toFixed(1) : '0.0') + '%';
+            
+            if (pnlEl) {
+                pnlEl.innerText = (totalPnlValue >= 0 ? '+' : '') + totalPnlValue.toFixed(2) + ' USDT';
+                pnlEl.className = totalPnlValue >= 0 ? 'up' : 'down';
+            }
 
             // --- ĐOẠN HIỂN THỊ VỐN & BẢO VỆ ---
             const capStatus = document.getElementById('capitalStatus');
             if (capStatus) {
-                const orders = Object.values(activeOrders || {});
+                const activeOrdersObj = typeof activeOrders !== 'undefined' ? activeOrders : {};
+                const orders = Object.values(activeOrdersObj);
                 let usedCap = 0;
                 let protectedCount = 0;
+
                 orders.forEach(o => {
-                    usedCap += parseFloat(o.capital || 0);
-                    if (o.isTrailed || o.sl || o.tp) protectedCount++;
+                    usedCap += parseFloat(o?.capital || 0);
+                    if (o?.isTrailed || o?.sl || o?.tp || o?.currentSL) protectedCount++;
                 });
 
-                // Lấy số dư thực tế tính 5%
-                const balRes = await okxApiRequest('/account/balance?ccy=USDT');
-                const availBal = parseFloat(balRes?.data?.[0]?.details?.find(d => d.ccy === 'USDT')?.availBal || 0);
+                // FIX LỖI 2: Lấy số dư an toàn với trường hợp API trả về mảng rỗng
+                let availBal = 0;
+                try {
+                    const balRes = await okxApiRequest('/account/balance?ccy=USDT');
+                    if (balRes?.code === '0' && balRes?.data?.[0]?.details) {
+                        const usdtDetail = balRes.data[0].details.find(d => d.ccy === 'USDT');
+                        availBal = parseFloat(usdtDetail?.availBal || usdtDetail?.eq || 0);
+                    }
+                } catch (balErr) {
+                    console.warn('Không lấy được số dư tài khoản:', balErr);
+                }
+
                 const lockedCap = availBal * 0.05;
 
                 capStatus.innerHTML = `
@@ -2264,11 +2294,12 @@ async function updatePNL24h() {
                 `;
             }
         }
-    } catch (e) { console.error('Lỗi PNL:', e); }
+    } catch (e) { 
+        console.error('Lỗi PNL 24h:', e); 
+    }
 }
 
 async function updatePnL() {
-    // Không cần isTrading – PnL vẫn cập nhật khi đang giữ lệnh
     await updatePNL24h();
 
     if (typeof renderHistory === 'function') {
