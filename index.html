@@ -873,16 +873,16 @@ const pool = (qualityCandidates || [])
     .sort((a, b) => Math.abs(b.delta || 0) - Math.abs(a.delta || 0));
 
    /* ===============================
-     * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT
-     * =============================== */
-    for (const p of pool) {
-        if (openIds.size >= MAX_POSITIONS) break;
-        if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
-        if (openIds.has(p.instId)) continue;
+* 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT (GUARANTEED ENTRY FIX)
+* =============================== */
+for (const p of pool) {
+    if (openIds.size >= MAX_POSITIONS) break;
+    if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
+    if (openIds.has(p.instId)) continue;
 
-        const now = Date.now();
+    const now = Date.now();
 
-        try {
+    try {
         // FIX LỖI 1: Chuẩn hóa side về chữ thường ('buy' hoặc 'sell')
         const sideLower = String(p.side).toLowerCase();
         if (sideLower !== 'buy' && sideLower !== 'sell') continue;
@@ -994,26 +994,28 @@ const pool = (qualityCandidates || [])
 
             log(`✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | Case: ${p.tradeCase} | Entry: ${p.last} | Lev: ${selectedLeverage}x | TP/SL: OK`);
 
+            const msg = `🚀 SUPPER BOT TÂN VÀO LỆNH THÀNH CÔNG\n` +
+                        `💎 Coin: ${p.instId.replace('-USDT-SWAP','')}\n` +
+                        `📊 Side: ${posSide.toUpperCase()}\n` +
+                        `📝 Case: ${p.tradeCase || 'Normal'}\n` +
+                        `⚡ Leverage: ${selectedLeverage}x\n` +
+                        `💵 Entry: ${p.last}\n` +
+                        `💰 Actual Margin: $${actualMargin.toFixed(2)}\n` +
+                        `🎯 TP: ${p.tp} | 🛡️ SL: ${p.sl}`;
 
-      const msg = `🚀 SUPPER BOT TÂN VÀO LỆNH THÀNH CÔNG\n` +
-                  `💎 Coin: ${p.instId.replace('-USDT-SWAP','')}\n` +
-                  `📝 Case: ${p.tradeCase || 'Normal'}\n` +
-                  `💵 Entry: ${p.last}\n` +
-                  `🎯 TP: ${p.tp} | 🛡️ SL: ${p.sl}`;
-      
-      if (typeof sendTelegram === 'function') sendTelegram(msg);
+            if (typeof sendTelegram === 'function') sendTelegram(msg);
 
-      fillerCooldown[p.instId] = now;
-      openIds.add(p.instId);
-      localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
-    } else {
-      log(`❌ LỖI API ${p.instId}: ${res?.msg || 'Unknown error'}`);
+            if (typeof fillerCooldown !== 'undefined') fillerCooldown[p.instId] = now;
+            openIds.add(p.instId);
+            if (typeof saveOrders === 'function') saveOrders();
+        } else {
+            log(`❌ LỖI API ${p.instId}: ${res?.msg || 'Unknown error'}`);
+        }
+    } catch (e) {
+        log(`❌ LỖI THỰC THI ${p.instId}: ${e.message}`);
     }
-  } catch (e) {
-    log(`❌ LỖI THỰC THI ${p.instId}: ${e.message}`);
-  }
 
-  await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 800));
 }
   } catch (e) {
     console.error('❌ masterFlow error:', e);
