@@ -1628,139 +1628,175 @@ async function monitorOrders() {
                /* =========================================================================
  * BLOCK 1: TP ENGINE (QUẢN LÝ TỰ ĐỘNG CHỐT LỜI ĐỘNG - FULL FIX)
  * ========================================================================= */
-let forceSLtoOldTP = false;
-let finalTP = st.currentTP || st.tp || null;
+/* ================= 1. TP & BUFFER (HYBRID ADAPTIVE SHADOW TP ENGINE) ================= */
 
-if (ENABLE_TP_ENGINE) {
-    if (!st.tpBuffer) st.tpBuffer = [];
-    st.tpBuffer.push(last);
-    if (st.tpBuffer.length > 120) st.tpBuffer.shift();
+if (!st.tpBuffer) st.tpBuffer = [];
+if (!st.tpBuffer.length) st.tpBuffer[0] = last;
 
-    if (st.peakPrice === undefined || !Number.isFinite(Number(st.peakPrice))) {
-        st.peakPrice = last;
+// Cập nhật giá trị vào cuối mảng
+st.tpBuffer.push(last);
+if (st.tpBuffer.length > 120) st.tpBuffer.shift();
+
+// FIX LỖI 1: Xác định peakPrice động trực tiếp dựa trên toàn bộ mảng thay vì cố định lưu vào index 0 gây lỗi tụt đỉnh khi shift
+// ĐỒNG BỘ: Lưu đỉnh xuyên suốt vòng đời vị thế, không lo bị tụt/mất đỉnh khi mảng shift sau 120 phần tử
+if (typeof st.peakPrice === 'undefined' || st.peakPrice === null) {
+    st.peakPrice = last;
+} else {
+    st.peakPrice = isLong ? Math.max(st.peakPrice, last) : Math.min(st.peakPrice, last);
+}
+const peakPrice = st.peakPrice;
+
+// KHAI BÁO TẠI ĐÂY ĐỂ TRÁNH LỖI KHỐI DƯỚI KHÔNG TRUY CẬP ĐƯỢC KHI PNL < TPTHRESHOLD
+let finalTP = st.tp;
+let forceSLtoOldTP = false; 
+
+// TÍCH HỢP TỪ BOT TÂN: TỰ ĐỘNG HẠ NGƯỠNG ĐỘNG TRONG VÙNG SIDEWAY KHI DÒNG TIỀN SUY YẾU
+let tpThreshold = 10; 
+if (typeof isSideway !== 'undefined' && isSideway) {
+    if (typeof volSpread !== 'undefined' && volSpread < 0.75 && typeof vwapSlope !== 'undefined' && Math.abs(vwapSlope) < 0.08) {
+        tpThreshold = 3.0; // Dòng tiền kiệt quệ trong sideway, hạ ngưỡng xuống 3% PnL để gặt ngắn
+    } else {
+        tpThreshold = 5.0; // Biên độ hẹp, hạ ngưỡng xuống 5% PnL để bảo toàn vốn
     }
-    if (isLong && last > st.peakPrice) st.peakPrice = last;
-    if (isShort && last < st.peakPrice) st.peakPrice = last;
+}
 
-    if (st.peakPnlPct === undefined || pnlPct > (st.peakPnlPct || 0)) {
-        st.peakPnlPct = pnlPct;
-    }
-    const peakPnlPct = Number.isFinite(Number(st.peakPnlPct))
-        ? Number(st.peakPnlPct)
-        : 0;
+if (pnlPct >= tpThreshold) {
+    
+    const maxInBuffer = Math.max(...st.tpBuffer); 
+    const minInBuffer = Math.min(...st.tpBuffer); 
+    const bufferRange = maxInBuffer - minInBuffer;
+    
+    let exhaustion = false;
+    const p1 = st.tpBuffer[st.tpBuffer.length - 1] || last;
+    const p2 = st.tpBuffer[st.tpBuffer.length - 2] || last;
+    const candleTrend = isLong ? (p1 < p2) : (p1 > p2);
 
-    const currentAtr = Number.isFinite(Number(st.atr)) && Number(st.atr) > 0
-        ? Number(st.atr)
-        : last * 0.005;
-
-    const atrMultiplier = peakPnlPct >= 100
-        ? 0.15
-        : (peakPnlPct >= 75 ? 0.20 : (peakPnlPct >= 50 ? 0.25 : (peakPnlPct >= 30 ? 0.30 : 0.45)));
-    const retraceGap = Math.max(
-        currentAtr * atrMultiplier,
-        Number(st.peakPrice || last) * 0.005,
-        last * 0.005
-    );
-
-    const mainTarget = isLong ? Number(st.resistPrice || 0) : Number(st.supportPrice || 0);
-    const bbBound = isLong ? Number(st.upperBB || 0) : Number(st.lowerBB || 0);
-    const scanTarget = Number(st.scanTP ?? st.tpScan ?? st.tp ?? 0);
-    const atrTarget = isLong ? last + currentAtr : last - currentAtr;
-
-    const tpCandidates = [
-        scanTarget,
-        mainTarget,
-        bbBound,
-        atrTarget
-    ]
-        .filter(v => Number.isFinite(v) && v > 0)
-        .filter(v => isLong ? v > last : v < last)
-        .sort((a, b) => isLong ? a - b : b - a);
-
-    let dynamicTP = tpCandidates.length > 0 ? tpCandidates[0] : null;
-
-    const tpThreshold = st.tradeCase?.includes('Trend') ? 10 : 8;
-
-    // Tính toán exhaustion & peak reversal
-    const bufLen = st.tpBuffer.length;
-    const p1 = bufLen >= 1 ? st.tpBuffer[bufLen - 1] : last;
-    const p2 = bufLen >= 2 ? st.tpBuffer[bufLen - 2] : last;
-    const p3 = bufLen >= 3 ? st.tpBuffer[bufLen - 3] : last;
-
-    const counterMoveExhaustion = isLong
-        ? (p1 < p2 && p2 < p3)
-        : (p1 > p2 && p2 > p3);
-
-    const peakPriceForExit = Number(st.peakPrice || last);
-    const pricePullback = isLong
-        ? (peakPriceForExit - last) / peakPriceForExit
-        : (last - peakPriceForExit) / peakPriceForExit;
-
-    const cvdDelta1h = Number(st.cvdDelta1h);
-    const cvdWeakening = Number.isFinite(cvdDelta1h) &&
-        (isLong ? cvdDelta1h <= 0 : cvdDelta1h >= 0);
-    const volumeWeakening = Number.isFinite(Number(st.volSpread)) &&
-        Number(st.volSpread) < 1;
-    const flowWeakening = Boolean(
-        st.flowWeakening ||
-        st.volumeWeakening ||
-        cvdWeakening ||
-        volumeWeakening
-    );
-    const flowConfirmAvailable =
-        Number.isFinite(cvdDelta1h) ||
-        Number.isFinite(Number(st.volSpread)) ||
-        st.flowWeakening !== undefined ||
-        st.volumeWeakening !== undefined;
-
-    const exhaustion = counterMoveExhaustion && (!flowConfirmAvailable || flowWeakening);
-    st.isMomentumExhausted = exhaustion;
-
-    const peakReversal =
-        pnlPct > 0 &&
-        peakPnlPct >= tpThreshold &&
-        pricePullback >= (retraceGap / peakPriceForExit) &&
-        exhaustion;
-
-    // --- LOGIC XỬ LÝ TP ĐỘNG NGUYÊN BẢN (KHÔNG GỠ BỎ TP) ---
-    let candidateTP = st.currentTP || st.tp || dynamicTP || null;
-
-    if (peakReversal) {
-        // Có đảo chiều tại đỉnh + exhaustion: kéo TP về sát đỉnh để chốt chủ động
-        candidateTP = isLong
-            ? Math.max(entry, peakPriceForExit - retraceGap)
-            : Math.min(entry, peakPriceForExit + retraceGap);
-        console.log(`🔔 [PEAK REVERSAL] ${instId} PNL ${pnlPct.toFixed(2)}% → kéo TP về đỉnh: ${candidateTP}`);
-    } 
-    else if (!exhaustion && dynamicTP) {
-        // Trend tiếp diễn: chỉ cho phép NỚI TP (Long tăng TP, Short giảm TP)
-        const oldTP = Number(st.currentTP || st.tp || 0);
-        if (!oldTP) {
-            candidateTP = dynamicTP;
-        } else if (isLong && dynamicTP > oldTP + currentAtr * 0.05) {
-            candidateTP = dynamicTP;
-            console.log(`🟢 [TREND CONTINUES] ${instId} → nới TP: ${candidateTP}`);
-        } else if (isShort && dynamicTP < oldTP - currentAtr * 0.05) {
-            candidateTP = dynamicTP;
-            console.log(`🟢 [TREND CONTINUES] ${instId} → nới TP: ${candidateTP}`);
+    // FIX LỖI 3: SIẾT CHẶT LOGIC TP KHI GIÁ VƯỢT BIÊN BOLLINGER BANDS VÀ RÚT RÂU
+    let isOutBBAndReversal = false;
+    if (typeof upperBB !== 'undefined' && typeof lowerBB !== 'undefined') {
+        if (isLong && p2 > upperBB && last < upperBB && candleTrend) {
+            // Lệnh Long: Giá nến trước ở ngoài biên trên, giá hiện tại chui ngược vào trong (Rút râu suy yếu)
+            isOutBBAndReversal = true;
+        } else if (!isLong && p2 < lowerBB && last > lowerBB && candleTrend) {
+            // Lệnh Short: Giá nến trước ở ngoài biên dưới, giá hiện tại giật ngược vào trong
+            isOutBBAndReversal = true;
         }
     }
 
-    // ĐẢM BẢO NGUYÊN TẮC: Không kéo lùi TP (Long chỉ tăng, Short chỉ giảm trừ khi Peak Reversal)
-    const existingTP = Number(st.currentTP || st.tp || 0);
-    if (existingTP > 0 && candidateTP && !peakReversal) {
-        if (isLong && candidateTP < existingTP) {
-            candidateTP = existingTP;
-        } else if (isShort && candidateTP > existingTP) {
-            candidateTP = existingTP;
+    // TÍCH HỢP TỪ BOT TÂN: BỘ LỌC VWAP KHI KHÓA LỢI NHUẬN BIÊN ĐỘ ĐỂ TĂNG ĐỘ CHÍNH XÁC
+    const isVwapValid = typeof vwap !== 'undefined' && typeof vwapSlope !== 'undefined';
+    let vwapBreach = false;
+    if (isOutBBAndReversal && isVwapValid) {
+        vwapBreach = isLong ? (last < vwap) : (last > vwap);
+    }
+
+    if (isOutBBAndReversal) {
+        // Nếu đã phá biên BB mà rút râu + dòng tiền yếu (volSpread giảm hoặc nến giảm) -> Kích hoạt kiệt sức lập tức để siết TP
+        exhaustion = true; 
+    } else if (bufferRange > 0) {
+        if (isLong && last >= (maxInBuffer - bufferRange * 0.05)) {
+            exhaustion = candleTrend;
+        } else if (!isLong && last <= (minInBuffer + bufferRange * 0.05)) {
+            exhaustion = candleTrend;
+        } else if (pnlPct < 30) {
+            exhaustion = isLong 
+                ? (last < (maxInBuffer - bufferRange * 0.15) && candleTrend) 
+                : (last > (minInBuffer + bufferRange * 0.15) && candleTrend);
+        } else {
+            exhaustion = isLong 
+                ? (last < (maxInBuffer - bufferRange * 0.35) && candleTrend) 
+                : (last > (minInBuffer + bufferRange * 0.35) && candleTrend);
+        }
+    } else {
+        exhaustion = candleTrend;
+    }
+
+    // ĐỒNG BỘ THƯỚC ĐO: Tách biệt rạch ròi 2 thước đo (Pullback PnL vs Pullback Giá thuần túy)
+    const dropFromPeak = isLong
+        ? (peakPrice - last) / peakPrice * 100 * leverage
+        : (last - peakPrice) / peakPrice * 100 * leverage;
+
+    const pureDropPct = isLong
+        ? (peakPrice - last) / peakPrice * 100
+        : (last - peakPrice) / peakPrice * 100;
+
+    // ĐỒNG BỘ BỘ LỌC DÒNG TIỀN: Định nghĩa cấu trúc kiệt sức dòng tiền thực tế (Vừa cạn Vol, vừa mất hỗ trợ VWAP phẳng)
+    const moneyExhausted = typeof volSpread !== 'undefined' && volSpread < 0.75 && isVwapValid && Math.abs(vwapSlope) < 0.08 && (isLong ? last < vwap : last > vwap);
+
+    // TÍCH HỢP TỪ BOT TÂN: ÉP ĐÓNG LỆCH CHỦ ĐỘNG TRONG VÙNG SIDEWAY KHI VOL SỤT GIẢM NGHIÊM TRỌNG
+    let isSidewayVolExhaustion = false;
+    if (typeof isSideway !== 'undefined' && isSideway && typeof volSpread !== 'undefined' && volSpread < 0.75) {
+        if (pureDropPct > 0.2 || (isVwapValid && (isLong ? last < vwap : last > vwap))) { 
+            isSidewayVolExhaustion = true;
         }
     }
 
-    // Ưu tiên bảo toàn TP cũ, không bao giờ để null hoặc xoá TP
-    finalTP = candidateTP || st.currentTP || st.tp || null;
-    if (finalTP !== null) {
-        st.currentTP = finalTP;
+    // THIẾT LẬP BỘ LỌC BREAKOUT_EXHAUSTION ĐỒNG ĐIỆU VỀ XU HƯỚNG VWAP
+    const isBreakoutExhaustion = pnlPct > 50 && typeof volSpread !== 'undefined' && volSpread < 0.75 && pureDropPct > 0.3 && isVwapValid && (isLong ? last < vwap : last > vwap);
+
+    // TÍCH HỢP TỪ BOT TÂN: Thay mốc dropTrigger thả lỏng của Hồng bằng bộ chặn lãi thông minh xuôi trend của Tân
+    // Siết chặt về 1.5% nếu dính bẫy rút râu ngoài biên BB của Hồng.
+    const dropTrigger = isOutBBAndReversal ? 1.5 : (
+        pnlPct >= 150 ? 5.0 :   // Lãi > 150%: Sụt đúng 5% từ đỉnh là khóa (Giữ tối thiểu 145%) thay vì cho rơi 25% như Hồng gốc
+        pnlPct >= 100 ? 7.5 :   // Lãi > 100%: Sụt 7.5% từ đỉnh (Giữ tối thiểu 92.5%)
+        pnlPct >= 60  ? 10.0 :  // Lãi > 60%: Sụt 10% từ đỉnh (Giữ tối thiểu 50%)
+        pnlPct >= 30  ? 12.5 :  // Lãi > 30%: Sụt 12.5% từ đỉnh (Giữ tối thiểu 17.5%)
+        (typeof isSideway !== 'undefined' && isSideway) ? 2.5 : 5.0
+    );
+
+    // Lệnh chốt Market từ đỉnh (Kết hợp đa điều kiện Hybrid: Dòng tiền kiệt sức OR Rút râu biên BB/VWAP OR Khô máu Sideway)
+    // OPTIMIZED: Loại bỏ điều kiện so sánh giá với đỉnh thừa thãi, giải phóng hiệu năng vi xử lý
+    if (
+        (dropFromPeak >= dropTrigger && exhaustion) ||
+        (isOutBBAndReversal && (dropFromPeak >= dropTrigger || vwapBreach)) ||
+        (isSidewayVolExhaustion && dropFromPeak >= 1.5) ||
+        (moneyExhausted && pureDropPct > 0.25 && pnlPct > 15) ||
+        isBreakoutExhaustion
+    ) {
+        let reasonStr = "EXHAUSTION_TP";
+        if (isOutBBAndReversal) reasonStr = "BB_REVERSAL_TP";
+        else if (isSidewayVolExhaustion) reasonStr = "SIDEWAY_VOL_EXHAUSTION_TP";
+        else if (moneyExhausted) reasonStr = "FLOW_EXHAUSTION_TP";
+        else if (isBreakoutExhaustion) reasonStr = "BREAKOUT_EXHAUSTION_TP";
+
+        console.log(`🎯 [HYBRID ${reasonStr} KÍCH HOẠT] ${instId} chốt tại PNL: ${pnlPct.toFixed(2)}% (Sụt từ đỉnh: ${dropFromPeak.toFixed(2)}%)`);
+
+        const closeRes = await okxApiRequest('/trade/order', 'POST', {
+            instId,
+            tdMode: 'cross',
+            side: isLong ? 'sell' : 'buy',
+            posSide: isLong ? 'long' : 'short',
+            ordType: 'market',
+            sz: posQty.toString()
+        });
+
+        if (closeRes?.code === '0') {
+            const msg = `💰 **SIÊU BOT HYBRID CHỐT TP (${reasonStr}): ${instId}**\n` +
+                        `📈 PNL Chốt: ${pnlPct.toFixed(2)}%\n` +
+                        `🏆 Siết chặt lợi nhuận thành công (Sườn Hồng Thực Chiến + Bộ lọc Xu hướng của Tân).`;
+
+            if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
+            if (typeof fillerCooldown !== 'undefined') fillerCooldown[instId] = Date.now();
+            delete activeOrders[instId];
+            localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+            continue;
+        }
     }
+    
+    // TÍCH HỢP TỪ BOT TÂN: Kích hoạt BREAKOUT_MODE khi các bộ lọc dời vị thế/chốt sớm chưa can thiệp nhằm gồng trend dài
+    else if (
+        pnlPct >= 30 && 
+        finalTP !== null &&
+        !moneyExhausted &&
+        !isOutBBAndReversal &&
+        !isBreakoutExhaustion &&
+        dropFromPeak < dropTrigger
+    ) {
+        finalTP = null;
+        forceSLtoOldTP = true;
+    }
+} else {
+    finalTP = st.currentTP || st.tp;
 }
 
 
