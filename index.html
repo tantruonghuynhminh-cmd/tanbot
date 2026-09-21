@@ -875,9 +875,23 @@ const pool = (qualityCandidates || [])
    /* ===============================
 * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT (GUARANTEED ENTRY FIX)
 * =============================== */
+
+// 🟢 FIX ĐIỂM NGHẼN: Cập nhật lại openIds thực tế từ OKX trước khi lặp (Tránh bị kẹt ID lệnh cũ)
+// Giả định biến openPositions chứa danh sách vị thế thực tế từ Bước 1
+if (typeof openPositions !== 'undefined') {
+    openIds = new Set(openPositions.map(p => p.instId));
+}
+
 for (const p of pool) {
-    if (openIds.size >= MAX_POSITIONS) break;
+    // 1. Kiểm tra giới hạn số lượng vị thế đang mở thực tế
+    if (openIds.size >= MAX_POSITIONS) {
+        log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
+        break;
+    }
+    
     if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
+    
+    // 2. Bỏ qua nếu mã này ĐANG MỞ VỊ THẾ THỰC TẾ trên OKX
     if (openIds.has(p.instId)) continue;
 
     const now = Date.now();
@@ -915,7 +929,6 @@ for (const p of pool) {
 
         // 1. DÒ LEVERAGE: Ưu tiên cao -> Hạ dần
         for (const lev of levStepList) {
-            // FIX LỖI 2: Truyền thêm posSide khi set leverage để đồng bộ vị thế LONG/SHORT
             const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
                 instId: p.instId,
                 lever: lev.toString(),
@@ -962,12 +975,12 @@ for (const p of pool) {
         const tpStr = (Math.round(p.tp / tickSz) * tickSz).toFixed(pPrec);
         const slStr = (Math.round(p.sl / tickSz) * tickSz).toFixed(pPrec);
 
-        // 4. BẮT ĐẦU ĐẶT LỆNH MARKET (Đã dùng biến sideLower & posSide chuẩn)
+        // 4. BẮT ĐẦU ĐẶT LỆNH MARKET
         const res = await okxApiRequest('/trade/order', 'POST', {
             instId: p.instId,
             tdMode: 'cross',
-            side: sideLower,       // 'buy' hoặc 'sell' chuẩn
-            posSide: posSide,     // 'long' hoặc 'short' chuẩn
+            side: sideLower,
+            posSide: posSide,
             ordType: 'market',
             sz: finalQty,
             attachAlgoOrds: [
@@ -1005,8 +1018,9 @@ for (const p of pool) {
 
             if (typeof sendTelegram === 'function') sendTelegram(msg);
 
-            if (typeof fillerCooldown !== 'undefined') fillerCooldown[p.instId] = now;
+            // Cập nhật lại danh sách vị thế đang mở ngay lập tức
             openIds.add(p.instId);
+
             if (typeof saveOrders === 'function') saveOrders();
         } else {
             log(`❌ LỖI API ${p.instId}: ${res?.msg || 'Unknown error'}`);
