@@ -2171,131 +2171,120 @@ if (ENABLE_SL_TRAILING) {
 }
 
 
-/* ================== HÀM LƯU TRỮ DỮ LIỆU ================== */
+/* ================== HÀM LƯU TRỮ DỮ LIỆU (FIXED LỖI LỆNH MA) ================== */
 function saveOrders() {
     try {
-        // ===== FIX LOCALSTORAGE CONFLICT (ĐỒNG BỘ THEO DỮ LIỆU THỰC TẾ) =====
-        const oldActive = JSON.parse(
-            localStorage.getItem('okx_active_orders') || '{}'
-        );
+        if (typeof activeOrders === 'undefined') return;
 
-        // Thay vì gộp mù quáng (khiến lệnh cũ không mất đi), 
-        // ta chỉ giữ lại những lệnh thực sự đang tồn tại trong biến RAM 'activeOrders'
-        const mergedActive = {};
+        // Chỉ lưu chính xác những vị thế thực sự đang tồn tại trong RAM
+        localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
 
-        for (const k in activeOrders) {
-            // Cập nhật thông tin mới nhất vào bản ghi, giữ lại thuộc tính cũ nếu cần
-            mergedActive[k] = {
-                ordType: 'oco',
-                ...(oldActive[k] || {}),
-                ...(activeOrders[k] || {})
-            };
+        if (typeof tradeHistory !== 'undefined') {
+            localStorage.setItem('okx_trade_history', JSON.stringify(tradeHistory));
         }
 
-        // Lưu bản ghi đã được dọn dẹp (chỉ chứa các lệnh thực tế đang chạy)
-        localStorage.setItem(
-            'okx_active_orders',
-            JSON.stringify(mergedActive)
-        );
-
-        // Lịch sử giao dịch giữ nguyên hành vi cũ
-        localStorage.setItem(
-            'okx_trade_history',
-            JSON.stringify(tradeHistory)
-        );
-
-        // Đồng bộ lại RAM - Đảm bảo RAM không chứa các "lệnh ma" đã bị xóa ở trên
-        activeOrders = mergedActive;
-
-        console.log("💾 Đã lưu trạng thái lệnh và lịch sử vào máy.");
+        console.log("💾 Đã đồng bộ chính xác trạng thái lệnh thực tế.");
     } catch (e) {
-        console.error("❌ Không thể lưu dữ liệu vào LocalStorage:", e);
+        console.error("❌ Lỗi saveOrders:", e);
     }
 }
 
-
-/* ================== HÀM LẤY PNL 24H TỪ OKX ================== */
+/* ================== HÀM LẤY PNL 24H TỪ OKX (FIXED) ================== */
 async function updatePNL24h() {
-    if (!isTrading || !apiKey) return;
+    // FIX: Bỏ !isTrading để PnL luôn cập nhật kể cả khi bấm Dừng Auto Trade
+    if (typeof apiKey !== 'undefined' && !apiKey) return;
+
     try {
+        // Lấy danh sách lệnh đã khớp 24h qua
         const res = await okxApiRequest('/trade/orders-history?instType=SWAP&state=filled&limit=100');
+        
         if (res && res.code === '0' && Array.isArray(res.data)) {
             let totalWin = 0, totalLoss = 0, totalPnlValue = 0;
+            
             tradeHistory = res.data.map(order => {
                 const pnl = parseFloat(order.pnl || 0);
-                if (pnl > 0) totalWin++; else if (pnl < 0) totalLoss++;
+                if (pnl > 0) totalWin++; 
+                else if (pnl < 0) totalLoss++;
+                
                 totalPnlValue += pnl;
                 return {
-                    time: parseInt(order.uTime), instId: order.instId,
-                    side: order.side, entry: order.avgPx, exit: order.fillPx, pnl: pnl
+                    time: parseInt(order.uTime || Date.now()), 
+                    instId: order.instId,
+                    side: order.side, 
+                    entry: parseFloat(order.avgPx || 0), 
+                    exit: parseFloat(order.fillPx || 0), 
+                    pnl: pnl
                 };
             });
 
-            // Cập nhật thống kê cơ bản
+            // Cập nhật lên UI Dashboard
             const total = totalWin + totalLoss;
-            document.getElementById('totalOrders').innerText = total;
-            document.getElementById('winOrders').innerText = totalWin;
-            document.getElementById('lossOrders').innerText = totalLoss;
-            document.getElementById('winRate').innerText = (total > 0 ? ((totalWin/total)*100).toFixed(1) : 0) + '%';
+            const elTotal = document.getElementById('totalOrders');
+            const elWin = document.getElementById('winOrders');
+            const elLoss = document.getElementById('lossOrders');
+            const elWinRate = document.getElementById('winRate');
             const pnlEl = document.getElementById('totalPnL');
-            pnlEl.innerText = totalPnlValue.toFixed(2) + ' USDT';
-            pnlEl.className = totalPnlValue >= 0 ? 'up' : 'down';
 
-            // --- ĐOẠN HIỂN THỊ VỐN & BẢO VỆ ---
-            const capStatus = document.getElementById('capitalStatus');
-            if (capStatus) {
-                const orders = Object.values(activeOrders || {});
-                let usedCap = 0;
-                let protectedCount = 0;
-                orders.forEach(o => {
-                    usedCap += parseFloat(o.capital || 0);
-                    if (o.isTrailed || o.sl || o.tp) protectedCount++;
-                });
-
-                // Lấy số dư thực tế tính 5%
-                const balRes = await okxApiRequest('/account/balance?ccy=USDT');
-                const availBal = parseFloat(balRes?.data?.[0]?.details?.find(d => d.ccy === 'USDT')?.availBal || 0);
-                const lockedCap = availBal * 0.05;
-
-                capStatus.innerHTML = `
-                    <div style="margin-top: 8px; line-height: 1.6;">
-                        <div>💰 <b>Vốn khóa vòng (5%):</b> ${lockedCap.toFixed(2)} USDT</div>
-                        <div>🛡️ <b>Đã bảo vệ:</b> ${protectedCount}/${orders.length} lệnh</div>
-                    </div>
-                `;
+            if (elTotal) elTotal.innerText = total;
+            if (elWin) elWin.innerText = totalWin;
+            if (elLoss) elLoss.innerText = totalLoss;
+            if (elWinRate) elWinRate.innerText = (total > 0 ? ((totalWin / total) * 100).toFixed(1) : '0.0') + '%';
+            
+            if (pnlEl) {
+                pnlEl.innerText = (totalPnlValue >= 0 ? '+' : '') + totalPnlValue.toFixed(2) + ' USDT';
+                pnlEl.className = totalPnlValue >= 0 ? 'up' : 'down';
             }
+
+            // Gọi hàm cập nhật hiển thị vốn & bảo vệ
+            await renderCapitalInfo();
         }
-    } catch (e) { console.error('Lỗi PNL:', e); }
+    } catch (e) { 
+        console.error('Lỗi PNL 24h:', e); 
+    }
 }
 
 async function updatePnL() {
-    // Không cần isTrading – PnL vẫn cập nhật khi đang giữ lệnh
     await updatePNL24h();
-
     if (typeof renderHistory === 'function') {
         renderHistory();
     }
 }
 
+/* ================== HÀM HIỂN THỊ VỐN & BẢO VỆ (FIXED LẤY SỐ DƯ OKX) ================== */
+async function renderCapitalInfo() {
+    const capStatus = document.getElementById('capitalStatus');
+    if (!capStatus) return;
 
-
-function renderCapitalInfo() {
-    const container = document.getElementById('capitalStatus');
-    if (!container) return;
-
-    const orders = Object.values(activeOrders || {});
-    const total = orders.length;
+    const activeOrdersObj = typeof activeOrders !== 'undefined' ? activeOrders : {};
+    const orders = Object.values(activeOrdersObj);
+    const totalPos = orders.length;
 
     let protectedCount = 0;
+    orders.forEach(o => {
+        // Lệnh được tính là bảo vệ nếu có SL/TP hoặc đang Trailing
+        if (o?.isTrailed || o?.sl || o?.tp || o?.currentSL) protectedCount++;
+    });
 
-    for (const o of orders) {
-        if (o.sl || o.tp) protectedCount++;
+    // FIX: Lấy chuẩn Vốn chủ sở hữu (Equity) từ OKX
+    let realBalance = 0;
+    try {
+        const balRes = await okxApiRequest('/account/balance?ccy=USDT');
+        if (balRes?.code === '0' && balRes?.data?.[0]) {
+            const accData = balRes.data[0];
+            const usdtDetail = accData.details?.find(d => d.ccy === 'USDT');
+            // Lấy theo eq (Equity) hoặc availEq / totalEq
+            realBalance = parseFloat(usdtDetail?.eq || accData.totalEq || usdtDetail?.availBal || 0);
+        }
+    } catch (balErr) {
+        console.warn('Lỗi lấy số dư tài khoản:', balErr);
     }
 
-    container.innerHTML = `
-        <div style="background:rgba(34,197,94,0.12);padding:10px;border-radius:6px">
-            <b>📦 Tổng lệnh:</b> ${total}<br/>
-            <b>🛡️ Đã bảo vệ (SL/TP):</b> ${protectedCount}/${total}
+    const lockedCap = realBalance * 0.05;
+
+    capStatus.innerHTML = `
+        <div style="margin-top: 8px; line-height: 1.6;">
+            <div>💰 <b>Vốn khóa vòng (5%):</b> ${lockedCap.toFixed(2)} USDT</div>
+            <div>🛡️ <b>Đã bảo vệ:</b> ${protectedCount}/${totalPos} lệnh</div>
         </div>
     `;
 }
