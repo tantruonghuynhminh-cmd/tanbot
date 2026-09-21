@@ -1614,7 +1614,7 @@ async function monitorOrders() {
                 }
 
 
-                /* =========================================================================
+               /* =========================================================================
  * BLOCK 1: TP ENGINE (QUẢN LÝ TỰ ĐỘNG CHỐT LỜI ĐỘNG - FULL FIX)
  * ========================================================================= */
 let forceSLtoOldTP = false;
@@ -1631,7 +1631,6 @@ if (ENABLE_TP_ENGINE) {
     if (isLong && last > st.peakPrice) st.peakPrice = last;
     if (isShort && last < st.peakPrice) st.peakPrice = last;
 
-    // FULL FIX: lưu PNL đỉnh; không tính trailing từ PNL hiện tại đã suy giảm.
     if (st.peakPnlPct === undefined || pnlPct > (st.peakPnlPct || 0)) {
         st.peakPnlPct = pnlPct;
     }
@@ -1643,7 +1642,6 @@ if (ENABLE_TP_ENGINE) {
         ? Number(st.atr)
         : last * 0.005;
 
-    // PNL đỉnh càng cao thì càng siết chặt khoảng cách trailing stop.
     const atrMultiplier = peakPnlPct >= 100
         ? 0.15
         : (peakPnlPct >= 75 ? 0.20 : (peakPnlPct >= 50 ? 0.25 : (peakPnlPct >= 30 ? 0.30 : 0.45)));
@@ -1658,7 +1656,6 @@ if (ENABLE_TP_ENGINE) {
     const scanTarget = Number(st.scanTP ?? st.tpScan ?? st.tp ?? 0);
     const atrTarget = isLong ? last + currentAtr : last - currentAtr;
 
-    // TP đa nguồn: chỉ lấy mục tiêu phía trước giá và ưu tiên mục tiêu gần nhất.
     const tpCandidates = [
         scanTarget,
         mainTarget,
@@ -1669,168 +1666,89 @@ if (ENABLE_TP_ENGINE) {
         .filter(v => isLong ? v > last : v < last)
         .sort((a, b) => isLong ? a - b : b - a);
 
-    let dynamicTP = tpCandidates.length > 0
-        ? tpCandidates[0]
-        : (Number(st.currentTP || 0) > 0 ? Number(st.currentTP) : null);
+    let dynamicTP = tpCandidates.length > 0 ? tpCandidates[0] : null;
 
-    finalTP = dynamicTP;
     const tpThreshold = st.tradeCase?.includes('Trend') ? 10 : 8;
 
-    // Peak-reversal vẫn được xét khi PNL hiện tại giảm nhưng còn dương,
-    // miễn peakPnlPct đã từng đạt ngưỡng kích hoạt.
-    if (pnlPct >= tpThreshold || (pnlPct > 0 && peakPnlPct >= tpThreshold)) {
-        const bufLen = st.tpBuffer.length;
-        const p1 = bufLen >= 1 ? st.tpBuffer[bufLen - 1] : last;
-        const p2 = bufLen >= 2 ? st.tpBuffer[bufLen - 2] : last;
-        const p3 = bufLen >= 3 ? st.tpBuffer[bufLen - 3] : last;
+    // Tính toán exhaustion & peak reversal
+    const bufLen = st.tpBuffer.length;
+    const p1 = bufLen >= 1 ? st.tpBuffer[bufLen - 1] : last;
+    const p2 = bufLen >= 2 ? st.tpBuffer[bufLen - 2] : last;
+    const p3 = bufLen >= 3 ? st.tpBuffer[bufLen - 3] : last;
 
-        // Bắt buộc 3 mẫu giá ngược hướng để xác nhận exhaustion.
-        const counterMoveExhaustion = isLong
-            ? (p1 < p2 && p2 < p3)
-            : (p1 > p2 && p2 > p3);
+    const counterMoveExhaustion = isLong
+        ? (p1 < p2 && p2 < p3)
+        : (p1 > p2 && p2 > p3);
 
-        const peakPriceForExit = Number(st.peakPrice || last);
-        const pricePullback = isLong
-            ? (peakPriceForExit - last) / peakPriceForExit
-            : (last - peakPriceForExit) / peakPriceForExit;
+    const peakPriceForExit = Number(st.peakPrice || last);
+    const pricePullback = isLong
+        ? (peakPriceForExit - last) / peakPriceForExit
+        : (last - peakPriceForExit) / peakPriceForExit;
 
-        // Khai báo an toàn, không bao giờ dùng biến cvdDelta1h chưa tồn tại.
-        const cvdDelta1h = Number(st.cvdDelta1h);
-        const cvdWeakening = Number.isFinite(cvdDelta1h) &&
-            (isLong ? cvdDelta1h <= 0 : cvdDelta1h >= 0);
-        const volumeWeakening = Number.isFinite(Number(st.volSpread)) &&
-            Number(st.volSpread) < 1;
-        const flowWeakening = Boolean(
-            st.flowWeakening ||
-            st.volumeWeakening ||
-            cvdWeakening ||
-            volumeWeakening
-        );
-        const flowConfirmAvailable =
-            Number.isFinite(cvdDelta1h) ||
-            Number.isFinite(Number(st.volSpread)) ||
-            st.flowWeakening !== undefined ||
-            st.volumeWeakening !== undefined;
+    const cvdDelta1h = Number(st.cvdDelta1h);
+    const cvdWeakening = Number.isFinite(cvdDelta1h) &&
+        (isLong ? cvdDelta1h <= 0 : cvdDelta1h >= 0);
+    const volumeWeakening = Number.isFinite(Number(st.volSpread)) &&
+        Number(st.volSpread) < 1;
+    const flowWeakening = Boolean(
+        st.flowWeakening ||
+        st.volumeWeakening ||
+        cvdWeakening ||
+        volumeWeakening
+    );
+    const flowConfirmAvailable =
+        Number.isFinite(cvdDelta1h) ||
+        Number.isFinite(Number(st.volSpread)) ||
+        st.flowWeakening !== undefined ||
+        st.volumeWeakening !== undefined;
 
-        const exhaustion = counterMoveExhaustion &&
-            (!flowConfirmAvailable || flowWeakening);
-        st.isMomentumExhausted = exhaustion;
+    const exhaustion = counterMoveExhaustion && (!flowConfirmAvailable || flowWeakening);
+    st.isMomentumExhausted = exhaustion;
 
-        // Chốt gần đỉnh khi đã có lãi, dòng tiền suy yếu và giá rời đỉnh đủ ATR.
-        const peakReversal =
-            pnlPct > 0 &&
-            peakPnlPct >= tpThreshold &&
-            pricePullback >= (retraceGap / peakPriceForExit) &&
-            exhaustion;
+    const peakReversal =
+        pnlPct > 0 &&
+        peakPnlPct >= tpThreshold &&
+        pricePullback >= (retraceGap / peakPriceForExit) &&
+        exhaustion;
 
-        let peakReversalHandled = false;
-        if (peakReversal) {
-            const peakExitTP = isLong
-                ? Math.max(entry, peakPriceForExit - retraceGap)
-                : Math.min(entry, peakPriceForExit + retraceGap);
+    // --- LOGIC XỬ LÝ TP ĐỘNG NGUYÊN BẢN (KHÔNG GỠ BỎ TP) ---
+    let candidateTP = st.currentTP || st.tp || dynamicTP || null;
 
-            finalTP = peakExitTP;
-            st.currentTP = finalTP;
-            peakReversalHandled = true;
-
-            console.log(
-                `🔔 [PEAK REVERSAL] ${instId} ` +
-                `PNL ${pnlPct.toFixed(2)}%, peakPNL ${peakPnlPct.toFixed(2)}% → ` +
-                `dòng tiền suy yếu, TP gần đỉnh: ${finalTP}`
-            );
-        }
-
-        const distToTarget = mainTarget > 0
-            ? Math.abs(mainTarget - last)
-            : Infinity;
-
-        const hasBrokenOut = isLong
-            ? ((bbBound > 0 && st.peakPrice > bbBound) || (mainTarget > 0 && st.peakPrice > mainTarget))
-            : ((bbBound > 0 && st.peakPrice < bbBound) || (mainTarget > 0 && st.peakPrice < mainTarget));
-
-        const pulledBack = isLong
-            ? ((bbBound > 0 && last < bbBound) || (mainTarget > 0 && last < mainTarget))
-            : ((bbBound > 0 && last > bbBound) || (mainTarget > 0 && last > mainTarget));
-
-        const isFailedBreakout = hasBrokenOut && pulledBack && exhaustion;
-
-        // Peak-reversal ưu tiên trước STATE 6 và STATE 4.
-        if (peakReversalHandled) {
-            // Giữ TP peakExitTP; không gỡ TP ở nhánh parabolic.
-        }
-        // Từ PNL 30% chính thức gỡ TP để nhường quyền chốt lời hoàn toàn cho trailing SL.
-        else if (pnlPct >= 30) {
-            finalTP = null;
-            st.currentTP = null;
-
-            console.log(
-                `🟣 [STATE 6 - PARABOLIC RUN] ${instId} ` +
-                `PNL ${pnlPct.toFixed(2)}% >= 30% → gỡ TP, nhường cho trailing SL.`
-            );
-
-            const msg =
-                `🟣 **SIÊU BOT UNLOCK TP (STATE 6): ${instId}**\n` +
-                `🚀 PNL: ${pnlPct.toFixed(2)}%\n` +
-                `📌 Đã gỡ TP target, chuyển sang quản lý bằng trailing SL.`;
-            if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
-        }
-        else if (isFailedBreakout) {
-            console.log(
-                `🔴 [STATE 4 - FAILED BREAKOUT] ${instId} ` +
-                `Breakout thất bại → giữ TP/SL server xử lý.`
-            );
-        }
-        else if (!exhaustion) {
-            const oldTP = Number(st.currentTP || 0);
-            const scanTP = Number(dynamicTP || 0);
-            const validLongTP = isLong && scanTP > last && (!oldTP || scanTP > oldTP + currentAtr * 0.05);
-            const validShortTP = isShort && scanTP < last && (!oldTP || scanTP < oldTP - currentAtr * 0.05);
-
-            if (validLongTP || validShortTP) {
-                finalTP = scanTP;
-                st.currentTP = finalTP;
-                console.log(`🟢 [TREND CONTINUES] ${instId} → nới TP: ${finalTP}`);
-            }
-            else {
-                finalTP = st.currentTP || dynamicTP;
-            }
-        }
-        else if (
-            exhaustion &&
-            (
-                distToTarget < currentAtr * 0.3 ||
-                (bbBound > 0 && (isLong ? last >= bbBound : last <= bbBound))
-            )
-        ) {
-            finalTP = isLong ? last + currentAtr * 0.2 : last - currentAtr * 0.2;
-            const oldTP = Number(st.currentTP || 0);
-            if (!oldTP || Math.abs(finalTP - oldTP) > currentAtr * 0.05) {
-                st.currentTP = finalTP;
-                console.log(`🟠 [STATE 3 - EXHAUSTION NEAR TARGET] ${instId} → TP: ${finalTP}`);
-            }
-        }
-        else if (exhaustion && distToTarget >= currentAtr * 0.3 && distToTarget <= currentAtr) {
-            const targetAhead = isLong
-                ? (mainTarget > last ? mainTarget : (bbBound > last ? bbBound : last + currentAtr * 0.5))
-                : (mainTarget < last ? mainTarget : (bbBound < last ? bbBound : last - currentAtr * 0.5));
-
-            finalTP = isLong
-                ? Math.min(targetAhead, last + currentAtr * 0.8)
-                : Math.max(targetAhead, last - currentAtr * 0.8);
-
-            const oldTP = Number(st.currentTP || 0);
-            if (!oldTP || Math.abs(finalTP - oldTP) > currentAtr * 0.05) {
-                st.currentTP = finalTP;
-                console.log(`🟡 [STATE 2 - EXHAUSTION WITH SPACE] ${instId} → TP: ${finalTP}`);
-            }
-        }
-        else {
-            finalTP = st.currentTP || dynamicTP;
+    if (peakReversal) {
+        // Có đảo chiều tại đỉnh + exhaustion: kéo TP về sát đỉnh để chốt chủ động
+        candidateTP = isLong
+            ? Math.max(entry, peakPriceForExit - retraceGap)
+            : Math.min(entry, peakPriceForExit + retraceGap);
+        console.log(`🔔 [PEAK REVERSAL] ${instId} PNL ${pnlPct.toFixed(2)}% → kéo TP về đỉnh: ${candidateTP}`);
+    } 
+    else if (!exhaustion && dynamicTP) {
+        // Trend tiếp diễn: chỉ cho phép NỚI TP (Long tăng TP, Short giảm TP)
+        const oldTP = Number(st.currentTP || st.tp || 0);
+        if (!oldTP) {
+            candidateTP = dynamicTP;
+        } else if (isLong && dynamicTP > oldTP + currentAtr * 0.05) {
+            candidateTP = dynamicTP;
+            console.log(`🟢 [TREND CONTINUES] ${instId} → nới TP: ${candidateTP}`);
+        } else if (isShort && dynamicTP < oldTP - currentAtr * 0.05) {
+            candidateTP = dynamicTP;
+            console.log(`🟢 [TREND CONTINUES] ${instId} → nới TP: ${candidateTP}`);
         }
     }
-    else {
-        st.currentTP = dynamicTP;
-        delete st.isMomentumExhausted;
+
+    // ĐẢM BẢO NGUYÊN TẮC: Không kéo lùi TP (Long chỉ tăng, Short chỉ giảm trừ khi Peak Reversal)
+    const existingTP = Number(st.currentTP || st.tp || 0);
+    if (existingTP > 0 && candidateTP && !peakReversal) {
+        if (isLong && candidateTP < existingTP) {
+            candidateTP = existingTP;
+        } else if (isShort && candidateTP > existingTP) {
+            candidateTP = existingTP;
+        }
+    }
+
+    // Ưu tiên bảo toàn TP cũ, không bao giờ để null hoặc xoá TP
+    finalTP = candidateTP || st.currentTP || st.tp || null;
+    if (finalTP !== null) {
+        st.currentTP = finalTP;
     }
 }
 
