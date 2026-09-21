@@ -1445,8 +1445,8 @@ async function monitorOrders() {
     // ⚙️ CẤU HÌNH BẬT / TẮT CÁC MÔ-ĐUN TỰ ĐỘNG (BẬT: true | TẮT: false)
     // -------------------------------------------------------------
     const ENABLE_HARD_SOFT_STOP = false; // Bật/Tắt Cắt lỗ khẩn cấp (Hard Stop & Soft Stop M15)
-    const ENABLE_TP_ENGINE        = true; // Bật/Tắt Quản lý Take Profit động (State 1-6)
-    const ENABLE_SL_TRAILING     = true; // Bật/Tắt Quản lý Stop Loss & Trailing SL
+    const ENABLE_TP_ENGINE        = false; // Bật/Tắt Quản lý Take Profit động (State 1-6)
+    const ENABLE_SL_TRAILING     = false; // Bật/Tắt Quản lý Stop Loss & Trailing SL
 
     let activeOrders = JSON.parse(localStorage.getItem('okx_active_orders')) || {};
 
