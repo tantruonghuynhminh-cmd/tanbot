@@ -731,6 +731,7 @@ async function masterFlow(qualityCandidates) {
     const openPositions = (posRes.data || []).filter(p => Math.abs(+p.pos) > 0);
     const openIds = new Set(openPositions.map(p => p.instId));
 
+    if (false) {
     /* ===============================
      * ⭐ 1.1 CHỐT CHỌN LỌC (TỐI ƯU CHO CHU KỲ 5 PHÚT)
      * =============================== */
@@ -768,6 +769,7 @@ async function masterFlow(qualityCandidates) {
                 isClosingAll = false;
             }, 3000);
         }
+    }
     }
 
     /* ===============================
