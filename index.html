@@ -357,8 +357,9 @@ async function reAttachOrder(instId) {
       side,
       sl: +slAlgo.slTriggerPx,
       slAlgoId: slAlgo.algoId,
-      tp: tpAlgo ? +tpAlgo.tpTriggerPx : activeOrders[instId].tp || 0,
-      tpAlgoId: tpAlgo ? tpAlgo.algoId : activeOrders[instId].tpAlgoId || null,
+      // 🔴 Sửa lại đây để an toàn, tránh lỗi đọc thuộc tính của undefined
+      tp: tpAlgo ? +tpAlgo.tpTriggerPx : (activeOrders[instId]?.tp || 0),
+      tpAlgoId: tpAlgo ? tpAlgo.algoId : (activeOrders[instId]?.tpAlgoId || null),
       status: 'RUNNING',
       lastTrail: 0,
       protected: true,
