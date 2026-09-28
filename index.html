@@ -468,16 +468,119 @@ function calcTP_SL(last, atr, isLong) {
 }
 
 /* ================== CORE LOGIC ================== */
+/* ================== CORE LOGIC ================== */
 async function scanOnce() {
+  const scanStartedAt = Date.now();
+    // ===== ENTRY FILTER FIXED — chỉ lọc entry, không thay đổi Top 60/Top 5 =====
+    const ENTRY_FILTER = {
+        longRsiMax: 55,
+        shortRsiMin: 45,
+        directionalVwapMaxPct: 2.0,
+        longBbZMax: 2.2,
+        shortBbZMin: -2.2
+    };
+
+    const isFiniteValue = value => Number.isFinite(Number(value));
+
+    // Entry filter only: missing feature rejects entry, never removes candidate from Top5.
+    const passesEntryFilter = c => {
+        if (!c) return false;
+        if (!isFiniteValue(c.rsi14_1h)) return false;
+        if (!isFiniteValue(c.vwapDistPct)) return false;
+        if (!isFiniteValue(c.bbZ20)) return false;
+        if (c.side === 'buy' && Number(c.rsi14_1h) > ENTRY_FILTER.longRsiMax) return false;
+        if (c.side === 'sell' && Number(c.rsi14_1h) < ENTRY_FILTER.shortRsiMin) return false;
+        if (c.side === 'buy' && Number(c.vwapDistPct) > ENTRY_FILTER.directionalVwapMaxPct) return false;
+        if (c.side === 'sell' && Number(c.vwapDistPct) < -ENTRY_FILTER.directionalVwapMaxPct) return false;
+        if (c.side === 'buy' && Number(c.bbZ20) > ENTRY_FILTER.longBbZMax) return false;
+        if (c.side === 'sell' && Number(c.bbZ20) < ENTRY_FILTER.shortBbZMin) return false;
+        return true;
+    };
+
+
+
+    // ================= TOP 5 TERMINAL LOGGER =================
+    // Logger chá» quan sÃ¡t tráº¡ng thÃ¡i; khÃ´ng can thiá»p ranking, entry hoáº·c trailing.
+    const top5TerminalState = globalThis._botTop5TerminalState || {
+        pumpKey: '',
+        dumpKey: '',
+        lastLogAt: 0,
+        lastEntryAt: 0
+    };
+
+    const top5Brief = list => (Array.isArray(list) ? list : []).map((x, i) => ({
+        rank: i + 1,
+        instId: x?.instId || '?',
+        delta: Number(x?.delta || 0),
+        last: Number(x?.last || 0),
+        side: x?.side || '?'
+    }));
+
+    const top5Key = list => top5Brief(list).map(x => x.instId).join('|');
+
+    const logTop5Terminal = (source = 'UNKNOWN', force = false) => {
+        try {
+            const now = Date.now();
+            const pump = top5Brief(topPump);
+            const dump = top5Brief(topDump);
+            const pumpKey = pump.map(x => x.instId).join('|');
+            const dumpKey = dump.map(x => x.instId).join('|');
+            const pumpChanged = pumpKey !== top5TerminalState.pumpKey;
+            const dumpChanged = dumpKey !== top5TerminalState.dumpKey;
+            const heartbeatDue = now - Number(top5TerminalState.lastLogAt || 0) >= 30000;
+
+            if (!force && !pumpChanged && !dumpChanged && !heartbeatDue) return;
+
+            const previousPump = String(top5TerminalState.pumpKey || '').split('|').filter(Boolean);
+            const previousDump = String(top5TerminalState.dumpKey || '').split('|').filter(Boolean);
+            const addedPump = pump.map(x => x.instId).filter(id => !previousPump.includes(id));
+            const removedPump = previousPump.filter(id => !pump.some(x => x.instId === id));
+            const addedDump = dump.map(x => x.instId).filter(id => !previousDump.includes(id));
+            const removedDump = previousDump.filter(id => !dump.some(x => x.instId === id));
+
+            const fmt = x => `${x.rank}:${x.instId} Î1H=${x.delta.toFixed(2)}% last=${x.last}`;
+            console.log(`\n[TOP5 ${source}] ${new Date(now).toISOString()}`);
+            console.log(`[TOP5 ${source}] Pump ${pump.length}/5 | ${pump.map(fmt).join(' || ') || 'EMPTY'}`);
+            console.log(`[TOP5 ${source}] Dump ${dump.length}/5 | ${dump.map(fmt).join(' || ') || 'EMPTY'}`);
+
+            if (pumpChanged || dumpChanged) {
+                console.log(
+                    `[TOP5 CHANGE] source=${source} ` +
+                    `Pump +[${addedPump.join(',') || '-'}] -[${removedPump.join(',') || '-'}] | ` +
+                    `Dump +[${addedDump.join(',') || '-'}] -[${removedDump.join(',') || '-'}]`
+                );
+            }
+
+            top5TerminalState.pumpKey = pumpKey;
+            top5TerminalState.dumpKey = dumpKey;
+            top5TerminalState.lastLogAt = now;
+            globalThis._botTop5TerminalState = top5TerminalState;
+        } catch (err) {
+            console.error('[TOP5 LOGGER ERROR]', err);
+        }
+    };
   if (isScanning) return;
   isScanning = true;
 
   const scanBtn = document.getElementById('scanNow');
   const status = document.getElementById('status');
+  const progressWrap = document.getElementById('scanProgressWrap');
+  const progressBar = document.getElementById('scanProgress');
+  const progressText = document.getElementById('scanProgressText');
+  const progressPct = document.getElementById('scanProgressPct');
+  const updateScanProgress = (done, total, label) => {
+    const safeTotal = Math.max(1, Number(total) || 1);
+    const pct = Math.max(0, Math.min(100, (Number(done) || 0) / safeTotal * 100));
+    if (progressWrap) progressWrap.style.display = 'block';
+    if (progressBar) progressBar.style.width = `${pct.toFixed(1)}%`;
+    if (progressPct) progressPct.textContent = `${pct.toFixed(0)}%`;
+    if (progressText) progressText.textContent = label || `Đang quét ${done}/${total}`;
+  };
 
   scanBtn.disabled = true;
   scanBtn.textContent = '⏳ Lấy Tickers...';
   status.textContent = '⏳ Đang quét dữ liệu toàn sàn...';
+  updateScanProgress(0, 120, 'Đang lấy danh sách toàn sàn...');
 
   try {
     /* ========= 0. INIT WS ========= */
@@ -496,13 +599,49 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
             if (!msg?.data) return;
 
             let needRender = false;
+            let rankDirty = false;
+            // Phải nằm ngoài vòng for để selectLiveTop() phía dưới cùng scope.
+            const liveScanPool = Array.isArray(globalThis._botScanCandidatePool)
+                ? globalThis._botScanCandidatePool
+                : [];
 
+            // FULL FIX: WebSocket cập nhật toàn bộ pool 120 rồi tái xếp hạng Top 5 live.
+            // Không đóng vị thế; chỉ cập nhật ranking và chuyển candidate mới sang entry flow.
             for (const d of msg.data) {
 
                 const inst = d.instId;
                 const last = Number(d.last);
 
                 if (!isFinite(last)) continue;
+
+                // FULL FIX + CPU GUARD: cập nhật toàn bộ pool 120 nhưng chỉ
+                // tính lại Delta/re-rank khi giá vượt ngưỡng động theo ATR.
+                const poolCoin = liveScanPool.find(x => x.instId === inst);
+                let meaningfulMove = false;
+
+                if (poolCoin && Number(poolCoin.price1h) > 0) {
+                    const referenceLast = Number(poolCoin.lastMeaningfulPrice || poolCoin.last || last);
+                    const priceMovePct = referenceLast > 0
+                        ? Math.abs((last - referenceLast) / referenceLast) * 100
+                        : 100;
+                    const atrPct = Number(poolCoin.atr) > 0
+                        ? (Number(poolCoin.atr) / last) * 100
+                        : 0;
+                    const minMovePct = Math.max(0.05, atrPct * 0.05);
+
+                    // Luôn cập nhật last để không mất giá live; chỉ tính Delta khi đủ biến động.
+                    poolCoin.last = last;
+                    meaningfulMove = priceMovePct >= minMovePct || poolCoin.delta === undefined;
+
+                    if (meaningfulMove) {
+                        poolCoin.delta = ((last - Number(poolCoin.price1h)) / Number(poolCoin.price1h)) * 100;
+                        poolCoin.liveUpdatedAt = Date.now();
+                        poolCoin.lastMeaningfulMovePct = priceMovePct;
+                        poolCoin.lastMeaningfulPrice = last;
+                        poolCoin.minMovePct = minMovePct;
+                        rankDirty = true;
+                    }
+                }
 
                 // DEBUG
                 // console.log("WS:", inst, last);
@@ -512,7 +651,7 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
                 if (pump) {
                     pump.last = last;
 
-                    if (pump.price1h) {
+                    if (meaningfulMove && pump.price1h) {
                         pump.delta = ((last - pump.price1h) / pump.price1h) * 100;
                     }
 
@@ -524,7 +663,7 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
                 if (dump) {
                     dump.last = last;
 
-                    if (dump.price1h) {
+                    if (meaningfulMove && dump.price1h) {
                         dump.delta = ((last - dump.price1h) / dump.price1h) * 100;
                     }
 
@@ -552,9 +691,57 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
 
             }
 
-            if (needRender) {
-                renderUI();
+            if (rankDirty) {
+                const selectLiveTop = side => liveScanPool
+                    .filter(x => side === 'buy' ? x.delta > 0 : x.delta < 0)
+                    .sort((a, b) => side === 'buy'
+                        ? b.delta - a.delta
+                        : a.delta - b.delta)
+                    .slice(0, TOP_N);
+
+                // VPS 24/7: chỉ re-rank khi có coin vượt ngưỡng biến động.
+                // Hai hướng Long/Short dùng cùng một cơ chế đối xứng.
+                topPump = selectLiveTop('buy');
+                topDump = selectLiveTop('sell');
+                console.log(`[WS POOL120] updated=${msg.data.length} pool=${liveScanPool.length} rankDirty=true → re-rank Pump=${topPump.length} Dump=${topDump.length}`);
+                logTop5Terminal('WS');
+
+                if (
+                    isTrading &&
+                    !isScanning &&
+                    !globalThis._botLiveEntryRunning &&
+                    (!globalThis._botLastLiveEntryAt || Date.now() - globalThis._botLastLiveEntryAt >= 1500)
+                ) {
+                    globalThis._botLastLiveEntryAt = Date.now();
+                    globalThis._botLiveEntryRunning = true;
+                    (async () => {
+                        try {
+                            const livePosRes = await okxApiRequest('/account/positions?instType=SWAP');
+                            const liveIds = new Set(
+                                livePosRes?.code === '0' && Array.isArray(livePosRes.data)
+                                    ? livePosRes.data.filter(p => Math.abs(+p.pos) > 0).map(p => p.instId)
+                                    : []
+                            );
+                            const cooldown = globalThis._botEntryCooldown || {};
+                            const liveQualityCandidates = [...topPump, ...topDump]
+                                .filter(c => c && c.instId && !activeOrders[c.instId] && !liveIds.has(c.instId) && !cooldown[c.instId] && passesEntryFilter(c));
+                            if (liveQualityCandidates.length > 0) {
+                                console.log(`[TOP5 ENTRY] candidates=${liveQualityCandidates.map(c => `${c.instId}:Δ1H=${Number(c.delta || 0).toFixed(2)}%`).join(' | ')}`);
+                                await masterFlow(liveQualityCandidates);
+                            }
+                        }
+                        catch (err) {
+                            console.error('Live WS entry error:', err);
+                        }
+                        finally {
+                            globalThis._botLiveEntryRunning = false;
+                        }
+                    })();
+                }
             }
+
+            // UI có thể cập nhật last price, nhưng không sort lại nếu tick nhỏ.
+            if (needRender) renderUI();
 
         } catch (err) {
             console.error("WS Error:", err);
@@ -573,6 +760,45 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
         console.error("WS Error:", err);
     };
 }
+
+    // FULL FIX: scanOnce tự xác nhận coin nào đã đóng TP/SL.
+    // Chỉ state đã từng được xác nhận có vị thế mới được đưa vào cooldown.
+    let entryCooldown = globalThis._botEntryCooldown ||
+      JSON.parse(localStorage.getItem('okx_entry_cooldown') || '{}') || {};
+    const closeCheckNow = Date.now();
+    for (const instId of Object.keys(entryCooldown)) {
+      if (Number(entryCooldown[instId]) <= closeCheckNow) delete entryCooldown[instId];
+    }
+
+    const positionCheck = await okxApiRequest('/account/positions?instType=SWAP');
+    if (positionCheck?.code === '0' && Array.isArray(positionCheck.data)) {
+      const livePositionIds = new Set(
+        positionCheck.data
+          .filter(p => Math.abs(+p.pos) > 0)
+          .map(p => p.instId)
+      );
+
+      for (const instId of Object.keys(activeOrders)) {
+        const st = activeOrders[instId];
+        if (livePositionIds.has(instId)) {
+          st.entryConfirmed = true;
+          continue;
+        }
+
+        if (st?.entryConfirmed === true) {
+          // Vị thế đã tồn tại trước đó nhưng không còn trên OKX:
+          // coi là đã hoàn tất TP/SL, cooldown đúng coin này.
+          entryCooldown[instId] = closeCheckNow + (REFRESH_MIN * 60 * 1000);
+          localStorage.setItem('last_exit_' + instId, closeCheckNow.toString());
+          delete activeOrders[instId];
+          console.log(`🔁 [SCAN REPLACEMENT] ${instId} không còn vị thế → cooldown 5 phút.`);
+        }
+      }
+
+      localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+    }
+    globalThis._botEntryCooldown = entryCooldown;
+    localStorage.setItem('okx_entry_cooldown', JSON.stringify(entryCooldown));
 
     /* ========= BƯỚC 1: QUÉT TOÀN SÀN BẰNG DELTA 24H ========= */
     const res = await fetch(OKX_TICKERS);
@@ -596,34 +822,52 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
     const top24hDump = [...rawTickers].sort((a, b) => a.delta24h - b.delta24h).slice(0, 60);
 
     // Hợp nhất Top 120 để tính Delta 1h chi tiết
-    const top120Tickers = [...top24hPump, ...top24hDump];
+    const top120Map = new Map();
+    for (const t of [...top24hPump, ...top24hDump]) {
+      if (t?.instId) top120Map.set(t.instId, t);
+    }
+    const top120Tickers = [...top120Map.values()];
 
     let processed = 0;
     const countElem = document.getElementById('symbolsCount');
     if (countElem) countElem.innerText = `Số cặp: 0/${top120Tickers.length}`;
+    updateScanProgress(0, top120Tickers.length, `Đã chọn Top60 Pump + Top60 Dump → 0/${top120Tickers.length} nến`);
 
-    /* ========= BƯỚC 2: TÍNH DELTA 1H + ATR CHO TOP 100 ========= */
+    /* ========= BƯỚC 2: TÍNH DELTA 1H + ATR + ENTRY FEATURES CHO TOP 120 ========= */
     const atrPriceMap = {};
-    for (let i = 0; i < top120Tickers.length; i += CONCURRENCY_LIMIT) {
-      const chunk = top120Tickers.slice(i, i + CONCURRENCY_LIMIT);
+    const scanConcurrency = 3;
+    const scanChunkDelayMs = 350;
+    const totalChunks = Math.ceil(top120Tickers.length / scanConcurrency);
+    for (let i = 0, chunkNo = 1; i < top120Tickers.length; i += scanConcurrency, chunkNo++) {
+      const chunk = top120Tickers.slice(i, i + scanConcurrency);
       const rs = await Promise.all(chunk.map(t => fetchATR_Price1h(t.instId)));
       rs.forEach(r => { if (r?.instId) atrPriceMap[r.instId] = r; });
       processed += chunk.length;
-      if (status) status.textContent = `⏳ Đã tính Delta 1h: ${processed}/${top120Tickers.length} cặp...`;
+      if (status) status.textContent = `⏳ Đang tính Delta 1H/ATR: ${processed}/${top120Tickers.length} cặp...`;
       if (countElem) countElem.innerText = `Số cặp: ${processed}/${top120Tickers.length}`;
-      if (processed < top120Tickers.length) await sleep(800);
+      updateScanProgress(processed, top120Tickers.length, `Đang quét nến: ${processed}/${top120Tickers.length} · chunk ${chunkNo}/${totalChunks} · tối đa ${scanConcurrency} request`);
+      console.log(`[SCAN FETCH] chunk ${chunkNo}/${totalChunks}, requests=${chunk.length}, processed=${processed}/${top120Tickers.length}`);
+      if (processed < top120Tickers.length) await sleep(scanChunkDelayMs);
     }
 
-   /* ========= BƯỚC 3: BUILD CANDIDATES & KIỂM TRA ĐỒNG THUẬN 24H x 1H ========= */
+/* ========= BƯỚC 3: BUILD CANDIDATES & KIỂM TRA ĐỒNG THUẬN 24H x 1H ========= */
     const candidates = [];
     for (const t of top120Tickers) {
       const inst = t.instId;
       const last = Number(t.last);
       const delta24h = t.delta24h || 0;
       const dataInfo = atrPriceMap[inst] || {};
-      const { atr, price1h, candles, candles1h, candles4h, volAvg1h, rsi } = dataInfo; 
+      const { atr, price1h, candles, candles1h, candles4h, volAvg1h, rsi,
+        rsi14_1h, vwapDistPct, bbZ20, completedVol, priorVolAvg, volSpread } = dataInfo;
 
-      if (!last || !price1h) continue;
+      // SCAN/RANKING chỉ cần dữ liệu lõi; feature Entry thiếu không được làm mất candidate.
+      if (!last || !price1h || !Number.isFinite(Number(atr)) || Number(atr) <= 0) {
+        console.warn('[SCAN CORE DROP]', { inst, last, price1h, atr });
+        continue;
+      }
+      if (!isFiniteValue(rsi14_1h) || !isFiniteValue(vwapDistPct) || !isFiniteValue(bbZ20)) {
+        console.warn('[ENTRY FEATURE MISSING — CANDIDATE KEPT]', { inst, rsi14_1h, vwapDistPct, bbZ20 });
+      }
 
       const delta = (last - price1h) / price1h * 100; // Delta 1h thực tế
       
@@ -634,8 +878,7 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
       let isWatching = false; 
 
       const vol24h = parseFloat(t.volCcy24h || 0);
-      const currentVol = parseFloat(t.vol24h || 0);
-      const volSpread = (volAvg1h && volAvg1h > 0) ? (currentVol / volAvg1h) : 1.2;
+      const currentVol = isFiniteValue(completedVol) ? Number(completedVol) : null;
 
 
       // --- KIỂM TRA XU HƯỚNG ĐA KHUNG (MA20) ---
@@ -648,32 +891,68 @@ if (!ws || ws.readyState !== WebSocket.OPEN) {
 
       candidates.push({
         inst, instId: inst, last, price1h, delta, delta24h, atr, tp, sl, side,
-        tradeCase, vol24h, currentVol, volSpread, isSpecial, upperBB, lowerBB, 
+        tradeCase, vol24h, currentVol, volSpread, isSpecial, upperBB, lowerBB,
+        rsi14_1h: isFiniteValue(rsi14_1h) ? Number(rsi14_1h) : null,
+        vwapDistPct: isFiniteValue(vwapDistPct) ? Number(vwapDistPct) : null,
+        bbZ20: isFiniteValue(bbZ20) ? Number(bbZ20) : null,
+        completedVol: isFiniteValue(completedVol) ? Number(completedVol) : null,
+        priorVolAvg: isFiniteValue(priorVolAvg) ? Number(priorVolAvg) : null,
+        volSpread: isFiniteValue(volSpread) ? Number(volSpread) : null,
         isWatching
       });
     }
 
     /* ========= BƯỚC 4: SẮP XẾP THUẦN THEO DELTA 1H ========= */
 
-// Top Pump: Delta 1h > 0
-topPump = candidates
-    .filter(x => x.delta > 0)
-    .sort((a, b) => b.delta - a.delta)
-    .slice(0, TOP_N);
+    // FULL FIX: mỗi scan tạo lại Top 5 động; không dùng watch pool cố định.
+    // Không loại coin vì nóng/đi ngang; chỉ cooldown coin vừa đóng TP/SL.
+    entryCooldown = globalThis._botEntryCooldown || entryCooldown;
+    const cooldownNow = Date.now();
+    for (const instId of Object.keys(entryCooldown)) {
+      if (Number(entryCooldown[instId]) <= cooldownNow) delete entryCooldown[instId];
+    }
 
-// Top Dump: Delta 1h < 0
-topDump = candidates
-    .filter(x => x.delta < 0)
-    .sort((a, b) => a.delta - b.delta)
-    .slice(0, TOP_N);
+    topPump = candidates
+      .filter(x => x.delta > 0)
+      .sort((a, b) => b.delta - a.delta)
+      .slice(0, TOP_N);
 
-console.log("Candidates:", candidates.length);
-console.log("Top Pump:", topPump.length, topPump);
-console.log("Top Dump:", topDump.length, topDump);
+    topDump = candidates
+      .filter(x => x.delta < 0)
+      .sort((a, b) => a.delta - b.delta)
+      .slice(0, TOP_N);
+
+    console.log('[SCAN DEBUG]', {
+      top120: top120Tickers.length,
+      atrOK: Object.keys(atrPriceMap).length,
+      candidates: candidates.length,
+      pump: topPump.length,
+      dump: topDump.length
+    });
+
+    logTop5Terminal('SCAN', true);
+
+    globalThis._botScanCandidatePool = candidates;
+    globalThis._botEntryCooldown = entryCooldown;
+    localStorage.setItem('okx_entry_cooldown', JSON.stringify(entryCooldown));
+
+    console.log("Candidates:", candidates.length);
+    console.log("Top Pump:", topPump.length, topPump);
+    console.log("Top Dump:", topDump.length, topDump);
 
     /* ========= BƯỚC 5: WS SUBSCRIBE ========= */
     if (ws.readyState === WebSocket.OPEN) {
-      const need = new Set([...topPump.map(x => x.instId), ...topDump.map(x => x.instId), ...Object.keys(activeOrders)]);
+      // Subscribe toàn bộ pool 120 + Top 5 hiện tại + vị thế đang mở.
+      // WS có đủ dữ liệu để tự tái xếp hạng Top 5 live.
+      const scanPool = Array.isArray(globalThis._botScanCandidatePool)
+        ? globalThis._botScanCandidatePool
+        : [];
+      const need = new Set([
+        ...scanPool.map(x => x.instId),
+        ...topPump.map(x => x.instId),
+        ...topDump.map(x => x.instId),
+        ...Object.keys(activeOrders)
+      ]);
       for (const instId of need) {
         if (wsSubscribed.has(instId)) continue;
         ws.send(JSON.stringify({ op: 'subscribe', args: [{ channel: 'tickers', instId }] }));
@@ -684,7 +963,21 @@ console.log("Top Dump:", topDump.length, topDump);
     /* ========= BƯỚC 6: MASTERFLOW ========= */
     if (isTrading) {
         const qualityCandidates = [...(topPump || []), ...(topDump || [])]
-            .filter(c => c && c.instId && !activeOrders[c.instId]);
+            .filter(c => c && c.instId && !activeOrders[c.instId] && !entryCooldown[c.instId] && passesEntryFilter(c));
+
+        console.log('[ENTRY FILTER]', {
+          totalTop5: [...topPump, ...topDump].length,
+          passed: qualityCandidates.length,
+          rejected: [...topPump, ...topDump]
+            .filter(c => !passesEntryFilter(c))
+            .map(c => ({
+              instId: c.instId,
+              side: c.side,
+              rsi: c.rsi14_1h,
+              vwapDist: c.vwapDistPct,
+              bbZ: c.bbZ20
+            }))
+        });
 
         for (const c of qualityCandidates) {
             const key = `signal-${c.instId}`;
@@ -701,15 +994,33 @@ console.log("Top Dump:", topDump.length, topDump);
             }
         }
 
-        await masterFlow(qualityCandidates); 
+        await masterFlow(qualityCandidates);
+
+        // Xác nhận sau entry trong scanOnce để đánh dấu state đã có vị thế.
+        // monitorOrders chỉ trailing TP/SL, không thay coin.
+        const afterEntryRes = await okxApiRequest('/account/positions?instType=SWAP');
+        if (afterEntryRes?.code === '0' && Array.isArray(afterEntryRes.data)) {
+          const afterEntryIds = new Set(
+            afterEntryRes.data
+              .filter(p => Math.abs(+p.pos) > 0)
+              .map(p => p.instId)
+          );
+          for (const instId of afterEntryIds) {
+            if (activeOrders[instId]) activeOrders[instId].entryConfirmed = true;
+          }
+          localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+        }
     }
     renderUI();
     renderHistory();
     status.textContent = `✅ Cập nhật lúc ${new Date().toLocaleTimeString()}`;
+    updateScanProgress(top120Tickers.length, top120Tickers.length, `Hoàn tất quét ${top120Tickers.length}/${top120Tickers.length} · đã tạo Top5 Pump/Dump`);
 
   } catch (err) {
     log('Lỗi scan: ' + err.message);
+    updateScanProgress(0, 1, `❌ Scan lỗi: ${err.message}`);
   } finally {
+    console.log(`[SCAN PERF] ${((Date.now() - scanStartedAt) / 1000).toFixed(2)}s`);
     isScanning = false;
     scanBtn.disabled = false;
     scanBtn.textContent = '🔄 Quét ngay';
