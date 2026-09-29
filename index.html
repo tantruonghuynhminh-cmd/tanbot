@@ -1,4 +1,4 @@
-z<!doctype html>
+<!doctype html>
 <html lang="vi">
 <head>
 <meta charset="utf-8"/>
@@ -1613,91 +1613,57 @@ if (pnlPct <= -20) {
 }
 }
 
-              /* ================= 1. TP & BUFFER (ADAPTIVE SHADOW TP + CHỐNG NHIỄU EXHAUSTION) ================= */
+             /* ================= 1. TP & BUFFER (ADAPTIVE SHADOW TP + EXHAUSTION EXIT) ================= */
 
 if (!st.tpBuffer) st.tpBuffer = [];
+
 if (!st.tpBuffer.length) st.tpBuffer[0] = last;
 
-// Cập nhật giá trị vào cuối mảng
+// Lưu đỉnh (Peak Price) tại index 0
+if (isLong && last > st.tpBuffer[0]) st.tpBuffer[0] = last;
+if (!isLong && last < st.tpBuffer[0]) st.tpBuffer[0] = last;
+
 st.tpBuffer.push(last);
 if (st.tpBuffer.length > 120) st.tpBuffer.shift();
 
-// FIX LỖI 1: Xác định peakPrice động trực tiếp dựa trên toàn bộ mảng thay vì cố định lưu vào index 0 gây lỗi tụt đỉnh khi shift
-const peakPrice = isLong ? Math.max(...st.tpBuffer) : Math.min(...st.tpBuffer);
-
-// KHAI BÁO TẠI ĐÂY ĐỂ TRÁNH LỖI KHỐI DƯỚI KHÔNG TRUY CẬP ĐƯỢC KHI PNL < TPTHRESHOLD
 let finalTP = st.tp;
-let forceSLtoOldTP = false; 
+let forceSLtoOldTP = false;
 
-let tpThreshold = 10; 
+let tpThreshold = 30; // Hạ xuống 30% PNL để bắt đầu theo dõi đỉnh sớm hơn
 
 if (pnlPct >= tpThreshold) {
-    
-    const maxInBuffer = Math.max(...st.tpBuffer); 
-    const minInBuffer = Math.min(...st.tpBuffer); 
-    const bufferRange = maxInBuffer - minInBuffer;
-    
-    let exhaustion = false;
-    const p1 = st.tpBuffer[st.tpBuffer.length - 1] || last;
-    const p2 = st.tpBuffer[st.tpBuffer.length - 2] || last;
-    const candleTrend = isLong ? (p1 < p2) : (p1 > p2);
 
-    // FIX LỖI 3: SIẾT CHẶT LOGIC TP KHI GIÁ VƯỢT BIÊN BOLLINGER BANDS VÀ RÚT RÂU
-    let isOutBBAndReversal = false;
-    if (typeof upperBB !== 'undefined' && typeof lowerBB !== 'undefined') {
-        if (isLong && p2 > upperBB && last < upperBB) {
-            // Lệnh Long: Giá nến trước ở ngoài biên trên, giá hiện tại chui ngược vào trong (Rút râu suy yếu)
-            isOutBBAndReversal = true;
-        } else if (!isLong && p2 < lowerBB && last > lowerBB) {
-            // Lệnh Short: Giá nến trước ở ngoài biên dưới, giá hiện tại giật ngược vào trong
-            isOutBBAndReversal = true;
-        }
-    }
+    // FIX: Không gán null, giữ st.tp để lệnh chốt lời luôn treo trên sàn
+    finalTP = st.tp; 
+    forceSLtoOldTP = true;
 
-    if (isOutBBAndReversal) {
-        // Nếu đã phá biên BB mà rút râu + dòng tiền yếu (volSpread giảm hoặc nến giảm) -> Kích hoạt kiệt sức lập tức để siết TP
-        exhaustion = true; 
-    } else if (bufferRange > 0) {
-        if (isLong && last >= (maxInBuffer - bufferRange * 0.05)) {
-            exhaustion = candleTrend;
-        } else if (!isLong && last <= (minInBuffer + bufferRange * 0.05)) {
-            exhaustion = candleTrend;
-        } else if (pnlPct < 30) {
-            exhaustion = isLong 
-                ? (last < (maxInBuffer - bufferRange * 0.10) && candleTrend) 
-                : (last > (minInBuffer + bufferRange * 0.10) && candleTrend);
-        } else {
-            finalTP = null; 
-            forceSLtoOldTP = true;
-            
-            exhaustion = isLong 
-                ? (last < (maxInBuffer - bufferRange * 0.30) && candleTrend) 
-                : (last > (minInBuffer + bufferRange * 0.30) && candleTrend);
-        }
-    } else {
-        exhaustion = candleTrend;
-    }
+    const peakPrice = st.tpBuffer[0];
 
-    // Tính % sụt giảm PNL từ đỉnh thực tế (Không lo bị mất đỉnh khi mảng shift)
+    // Tính % sụt giảm PNL từ đỉnh
     const dropFromPeak = isLong
         ? (peakPrice - last) / peakPrice * 100 * leverage
         : (last - peakPrice) / peakPrice * 100 * leverage;
 
-    // FIX LỖI 2: Hạ dropTrigger xuống mức cực thấp (chỉ 1.5% đến 2%) khi phát hiện tín hiệu rút râu ngoài biên BB để siết chặt điểm chốt
-    const dropTrigger = isOutBBAndReversal ? 1.5 : (
-    pnlPct >= 150 ? 5 :
-    pnlPct >= 100 ? 8 :
-    pnlPct >= 60  ? 10 :
-    pnlPct >= 30  ? 15 : 20
-);
+    // Tối ưu dropTrigger: Lồng logic đa chiến thuật vào cùng một biến mà không đổi tên
+    const dropTrigger =
+        (st.tradeCase?.includes("Trend") || st.isSpecial) 
+            ? (pnlPct >= 150 ? 30 : (pnlPct >= 100 ? 25 : 20)) // Case Trend: Nới lỏng cho giá "thở"
+            : (st.tradeCase?.includes("Rev")
+                ? (pnlPct >= 60 ? 12 : 8) // Case Đảo chiều: Siết chặt, quay đầu là chốt
+                : (pnlPct >= 100 ? 20 : (pnlPct >= 60 ? 15 : 10))); // Case Normal/Sideway
 
-    // Lệnh chốt Market từ đỉnh
+    const p1 = st.tpBuffer[st.tpBuffer.length - 1] || last;
+    const p2 = st.tpBuffer[st.tpBuffer.length - 2] || last;
+
+    // Exhaustion nhạy bén: Chỉ cần nến hiện tại đi ngược nến trước
+    const exhaustion = isLong ? (p1 < p2) : (p1 > p2);
+
     if (
         dropFromPeak >= dropTrigger && 
         (isLong ? last < peakPrice : last > peakPrice) && 
         exhaustion
     ) {
-        console.log(`🎯 [BB & EXHAUSTION TP KÍCH HOẠT] ${instId} chốt tại PNL: ${pnlPct.toFixed(2)}% (Sụt từ đỉnh biên BB: ${dropFromPeak.toFixed(2)}%)`);
+        console.log(`🎯 [10x-20x TP] ${instId} chốt tại PNL: ${pnlPct.toFixed(2)}% (Rơi ${dropFromPeak.toFixed(2)}% từ đỉnh)`);
 
         const closeRes = await okxApiRequest('/trade/order', 'POST', {
             instId,
@@ -1709,9 +1675,9 @@ if (pnlPct >= tpThreshold) {
         });
 
         if (closeRes?.code === '0') {
-            const msg = `💰 **SIÊU BOT TÂN CHỐT TP (BIÊN BB & DÒNG TIỀN KIỆT SỨC): ${instId}**\n` +
-                        `📈 PNL Chốt: ${pnlPct.toFixed(2)}%\n` +
-                        `🏆 Siết chặt lợi nhuận thành công khi giá rút râu ngoài dải Bollinger Bands.`;
+            const msg = `💰 **SIÊU BOT TP (10x-20x): ${instId}**\n` +
+                        `📈 PNL: ${pnlPct.toFixed(2)}%\n` +
+                        `🏆 Đã chốt khi giá quay đầu từ đỉnh.`;
 
             if (typeof sendTelegram === 'function') sendTelegram(msg).catch(() => {});
             if (typeof fillerCooldown !== 'undefined') fillerCooldown[instId] = Date.now();
@@ -1721,46 +1687,49 @@ if (pnlPct >= tpThreshold) {
         }
     }
 } else {
-    finalTP = st.currentTP || st.tp;
+    finalTP = st.tp || st.currentTP;
 }
 
-/* ================= 2. SL TRAILING & BUFFER (BẢO VỆ CHẶT CHẼ THEO TỪNG CẤP ĐỘ) ================= */
+                /* ================= 2. SL TRAILING & BUFFER (NÂNG CẤP XÁC NHẬN NẾN) ================= */
 let proposedSL = null; 
-const holdTimeMins = (Date.now() - st.ts) / 60000; 
+const holdTimeMins = (Date.now() - st.ts) / 60000; // Tính thời gian giữ lệnh theo phút
 
-// CHẶN QUÉT NON: Xác nhận lệnh đã "vào form" ổn định
+// CHẶN QUÉT NON: Chỉ bắt đầu Trailing khi lệnh đã chạy được ít nhất 5-10 phút 
+// hoặc PNL đã đạt một ngưỡng an toàn nhất định.
 const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10; 
 
-// A. KHÓA LÃI LỚN KHI PNL >= 30% (XỬ LÝ LỖI THUA NGƯỢC)
-if (pnlPct >= 30) {
-    // Ưu tiên 1: Dời SL lên mốc TP cũ nếu có
-    if (forceSLtoOldTP && st.tp) {
-        proposedSL = +st.tp;
-    } else {
-        // Ưu tiên 2: Nếu không có TP cũ, ép khóa tối thiểu 15% PNL lãi (Giữ Gap tối đa 15% so với giá chạy)
-        let safeGap = 15;
-        proposedSL = entry * (1 + (isLong ? (pnlPct - safeGap) / 100 / leverage : -(pnlPct - safeGap) / 100 / leverage));
-    }
+// SỬA LỖI CHỒNG CHÉO: Dùng cấu trúc else if phân cấp từ cao xuống thấp
+if (forceSLtoOldTP && st.tp) {
+    // Khi PNL >= 30%, gỡ TP và khóa chặt SL tại mức TP cũ
+    proposedSL = +st.tp; 
 } 
-// B. REVERSAL SPECIAL: Đánh đảo chiều cần giữ tối thiểu 15% lãi
-else if (st.tradeCase?.includes("Rev") && pnlPct >= 25) {
-    let revGap = 10; 
+// B. REVERSAL: Đánh đảo chiều cần khóa lãi cực nhanh nhưng vẫn cần nến "thở"
+else if (st.tradeCase?.includes("Rev") && pnlPct >= 30) {
+    let revGap = 15; // Giảm Gap xuống 15 để giữ lại 15% lãi (thay vì 10%)
     proposedSL = entry * (1 + (isLong ? (pnlPct - revGap) / 100 / leverage : -(pnlPct - revGap) / 100 / leverage));
 }
-// C. LÃI TRUNG BÌNH KHÁ (25% -> 30%)
+// C. TREND & SPECIAL: Lãi lớn (PNL >= 50% - Đã gỡ TP)
+else if (pnlPct >= 50) {
+    // Tinh chỉnh Gap để bám sát giá hơn khi gồng trend vô cực
+    let gap = st.isSpecial ? (pnlPct >= 100 ? 30 : 40) : (pnlPct >= 100 ? 35 : (pnlPct >= 70 ? 25 : 30));
+    proposedSL = entry * (1 + (isLong ? (pnlPct - gap) / 100 / leverage : -(pnlPct - gap) / 100 / leverage));
+}
+// D. LÃI TRUNG BÌNH (25% - 50%)
 else if (pnlPct >= 25 && isConfirmed) { 
-    let miniGap = 15; // Ví dụ: Lãi 28% -> Khóa lãi ở mức +13% PNL
+    let miniGap = 15; // Giữ Gap 15% (Ví dụ lãi 40% khóa 25%)
     proposedSL = entry * (1 + (isLong ? (pnlPct - miniGap) / 100 / leverage : -(pnlPct - miniGap) / 100 / leverage));
 }
-// D. LÃI TRUNG BÌNH NHỎ (15% -> 25%)
-else if (pnlPct >= 15 && isConfirmed) {
-    let midGap = 10; // Ví dụ: Lãi 18% -> Khóa lãi ở mức +8% PNL
-    proposedSL = entry * (1 + (isLong ? (pnlPct - midGap) / 100 / leverage : -(pnlPct - midGap) / 100 / leverage));
-}
-// E. LÃI NHỎ CHỚM NỞ (10% -> 15%): TUYỆT ĐỐI HÒA HOẶC LÃI NHẸ
+/* ---------- FIX: TRAILING KHI LÃI < 25% (ĐÃ GỘP ĐỂ TRÁNH GHI ĐÈ) ---------- */
 else if (pnlPct >= 10 && isConfirmed) {
-    // Thay vì để SL âm, ép thẳng về Entry + 0.5% PNL để trả phí sàn và giữ tâm lý dương
-    proposedSL = entry * (1 + (isLong ? 0.005 / leverage : -0.005 / leverage)); 
+    // Giữ khoảng cách SL cách giá hiện tại một khoảng 15% (tránh râu nến)
+    let buffer = 15; 
+    let newSLPct = pnlPct - buffer;
+    proposedSL = entry * (1 + (isLong ? newSLPct / 100 / leverage : -newSLPct / 100 / leverage));
+}
+// E. BẢO VỆ VỐN (15%): Chỉ dời về Entry khi nến đã ổn định (>10p)
+else if (pnlPct >= 15 && isConfirmed) { 
+    // Dời về Entry + 0.1% để bảo toàn vốn
+    proposedSL = entry * (1 + (isLong ? 0.003 : -0.003)); 
 }
 
 /* ================= 3. ĐẢM BẢO SL CHỈ TIẾN KHÔNG LÙI (FIXED) ================= */
