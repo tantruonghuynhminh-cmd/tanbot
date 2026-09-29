@@ -469,7 +469,6 @@ function calcTP_SL(last, atr, isLong) {
 }
 
 /* ================== CORE LOGIC ================== */
-/* ================== CORE LOGIC ================== */
 async function scanOnce() {
   const scanStartedAt = Date.now();
     // ===== ENTRY FILTER FIXED — chỉ lọc entry, không thay đổi Top 60/Top 5 =====
@@ -1041,7 +1040,7 @@ async function masterFlow(qualityCandidates) {
 
     // Lấy danh sách ID các lệnh đang giữ vị thế
     const openPositions = (posRes.data || []).filter(p => Math.abs(+p.pos) > 0);
-    const openIds = new Set(openPositions.map(p => p.instId));
+    let openIds = new Set(openPositions.map(p => p.instId));
 
     if (false) {
     /* ===============================
