@@ -1165,7 +1165,7 @@ async function masterFlow(qualityCandidates) {
     const LEVERAGE = parseInt(document.getElementById('leverage')?.value || 10);
 
     /* =======================================================
-     * ⭐ KHUNG GIỜ NGHỈ (22h tối - 5h sáng): CHỈ MONITOR, CHẶN LỆNH MỚI
+     * ⭐ KHUNG GIỜ NGHỈ (22h tối - 7h sáng): CHỈ MONITOR, CHẶN LỆNH MỚI
      * ======================================================= */
     const currentHour = parseInt(new Date().toLocaleString("en-US", {
         timeZone: "Asia/Ho_Chi_Minh", 
@@ -1173,7 +1173,7 @@ async function masterFlow(qualityCandidates) {
         hour12: false
     }));
 
-    if (currentHour >= 22 || currentHour < 5) {
+    if (currentHour >= 22 || currentHour < 7) {
         log(`💤 Khung giờ rủi ro rạng sáng (${currentHour}h). Chỉ Monitor lệnh cũ, chặn quét mở vị thế mới.`);
         return; // Thoát hàm tại đây, không cho chạy xuống Phần 3 & Phần 4 phía dưới
     }
@@ -1628,7 +1628,7 @@ if (st.tpBuffer.length > 120) st.tpBuffer.shift();
 let finalTP = st.tp;
 let forceSLtoOldTP = false;
 
-let tpThreshold = 30; // Hạ xuống 30% PNL để bắt đầu theo dõi đỉnh sớm hơn
+let tpThreshold = 10; // Hạ xuống 30% PNL để bắt đầu theo dõi đỉnh sớm hơn
 
 if (pnlPct >= tpThreshold) {
 
