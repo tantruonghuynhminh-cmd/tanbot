@@ -1,140 +1,130 @@
+/* ========================================================
+   server.js - BACKEND SERVER & PROXY (EXPRESS.JS)
+   ======================================================== */
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const path = require('path');
+const cors = require('cors');
+
+// Cấu hình thông tin API OKX (Nạp trực tiếp làm giá trị fallback)
+const OKX_API_KEY = process.env.OKX_API_KEY || '7ffea234-8094-4f4c-91f6-1773d2370b5c';
+const OKX_SECRET_KEY = process.env.OKX_SECRET_KEY || '55D97BC2B8E2457EAA62F6152BEE9C03';
+const OKX_PASSPHRASE = process.env.OKX_PASSPHRASE || 'Minhtantruong@1688';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Trạng thái Auto Trade chạy ngầm trên Server
-let isAutoTradeRunning = false;
-
+app.use(cors());
 app.use(express.json());
-// Phục vụ tệp giao diện tĩnh
-app.use(express.static(path.join(__dirname)));
+
+// Phục vụ tệp tĩnh và định tuyến trang chủ index.html
+app.use(express.static(__dirname));
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+/* ========================================================
+   1. UTILS & SIGNATURE HELPERS
+   ======================================================== */
 
 // Hàm tạo chữ ký HMAC-SHA256 cho OKX Private API
 function generateOkxSignature(timestamp, method, requestPath, body = '') {
-  const secretKey = process.env.OKX_SECRET_KEY || '';
   const message = timestamp + method.toUpperCase() + requestPath + body;
-  return crypto.createHmac('sha256', secretKey).update(message).digest('base64');
+  return crypto.createHmac('sha256', OKX_SECRET_KEY).update(message).digest('base64');
 }
 
-// ----------------------------------------------------
-// 0. ENDPOINTS QUẢN LÝ AUTOTRADE & HEALTH CHECK
-// ----------------------------------------------------
-
-// Health Check cho UptimeRobot
+// Endpoint Health Check cho UptimeRobot giữ Render luôn chạy 24/7
 app.get('/health', (req, res) => {
   res.status(200).send('OK - Bot is running');
 });
 
-// Lấy trạng thái Auto Trade hiện tại (Giải quyết lỗi 404 từ Frontend)
-app.get('/api/autotrade/status', (req, res) => {
-  res.json({ success: true, running: isAutoTradeRunning });
+/* ========================================================
+   2. TRẠNG THÁI & API ĐIỀU KHIỂN BOT TRÊN SERVER
+   ======================================================== */
+
+let isTrading = false;
+let topPump = [];
+let topDump = [];
+let activeOrders = {};
+let tradeHistory = [];
+
+// API: Bắt đầu Auto Trade
+app.post('/api/autotrade/start', (req, res) => {
+  isTrading = true;
+  console.log('🚀 AUTO TRADE: ĐÃ BẬT');
+  res.json({ ok: true, running: true });
 });
 
-// Bật/Tắt Auto Trade từ giao diện
-app.post('/api/autotrade/toggle', (req, res) => {
-  const { enabled } = req.body;
-  if (typeof enabled === 'boolean') {
-    isAutoTradeRunning = enabled;
-    console.log(`[BOT] Auto Trade đã được: ${isAutoTradeRunning ? 'BẬT 🟢' : 'TẮT 🔴'}`);
-  } else {
-    isAutoTradeRunning = !isAutoTradeRunning;
-  }
-  res.json({ success: true, running: isAutoTradeRunning });
+// API: Dừng Auto Trade
+app.post('/api/autotrade/stop', (req, res) => {
+  isTrading = false;
+  console.log('🛑 AUTO TRADE: ĐÃ TẮT');
+  res.json({ ok: true, running: false });
 });
 
-// ----------------------------------------------------
-// 1. PUBLIC API: Lấy giá thị trường OKX
-// ----------------------------------------------------
+// API: Toggle Bật/Tắt Bot
+app.post('/api/bot/toggle', (req, res) => {
+  const { enable } = req.body;
+  isTrading = (typeof enable === 'boolean') ? enable : !isTrading;
+  res.json({
+    ok: true,
+    success: true,
+    running: isTrading,
+    isTrading: isTrading,
+    message: `Đã ${isTrading ? 'BẬT 🟢' : 'TẮT 🔴'} Auto Trade thành công.`
+  });
+});
+
+// API: Lấy trạng thái bot
+app.get(['/api/autotrade/status', '/api/bot/status'], (req, res) => {
+  res.json({
+    ok: true,
+    success: true,
+    running: isTrading,
+    isTrading: isTrading,
+    topPump: topPump,
+    topDump: topDump,
+    activeOrders: activeOrders,
+    tradeHistory: tradeHistory
+  });
+});
+
+/* ========================================================
+   3. OKX DIRECT & PROXY API ENDPOINTS
+   ======================================================== */
+
+// PUBLIC API: Lấy giá thị trường
 app.get('/api/okx/ticker', async (req, res) => {
   try {
     const instId = req.query.instId || 'BTC-USDT';
     const response = await axios.get(`https://www.okx.com/api/v5/market/ticker?instId=${instId}`);
     res.json(response.data);
   } catch (error) {
-    res.status(error.response?.status || 500).json({ error: error.response ? error.response.data : error.message });
+    res.status(500).json({ error: error.response ? error.response.data : error.message });
   }
 });
 
-// ----------------------------------------------------
-// 2. PRIVATE API: Lấy số dư tài khoản
-// ----------------------------------------------------
-app.get('/api/okx/balance', async (req, res) => {
-  try {
-    const timestamp = new Date().toISOString();
-    const method = 'GET';
-    const requestPath = '/api/v5/account/balance';
-
-    const signature = generateOkxSignature(timestamp, method, requestPath);
-
-    const response = await axios.get(`https://www.okx.com${requestPath}`, {
-      headers: {
-        'OK-ACCESS-KEY': process.env.OKX_API_KEY || '',
-        'OK-ACCESS-SIGN': signature,
-        'OK-ACCESS-TIMESTAMP': timestamp,
-        'OK-ACCESS-PASSPHRASE': process.env.OKX_PASSPHRASE || '',
-        'Content-Type': 'application/json'
-      }
-    });
-
-    res.json(response.data);
-  } catch (error) {
-    res.status(error.response?.status || 500).json({ error: error.response ? error.response.data : error.message });
-  }
-});
-
-// ----------------------------------------------------
-// 3. PRIVATE API: Đặt lệnh giao dịch
-// ----------------------------------------------------
-app.post('/api/okx/order', async (req, res) => {
-  try {
-    const timestamp = new Date().toISOString();
-    const method = 'POST';
-    const requestPath = '/api/v5/trade/order';
-    const bodyString = JSON.stringify(req.body);
-
-    const signature = generateOkxSignature(timestamp, method, requestPath, bodyString);
-
-    const response = await axios.post(`https://www.okx.com${requestPath}`, req.body, {
-      headers: {
-        'OK-ACCESS-KEY': process.env.OKX_API_KEY || '',
-        'OK-ACCESS-SIGN': signature,
-        'OK-ACCESS-TIMESTAMP': timestamp,
-        'OK-ACCESS-PASSPHRASE': process.env.OKX_PASSPHRASE || '',
-        'Content-Type': 'application/json'
-      }
-    });
-
-    res.json(response.data);
-  } catch (error) {
-    res.status(error.response?.status || 500).json({ error: error.response ? error.response.data : error.message });
-  }
-});
-
-// ----------------------------------------------------
-// 4. PROXY CHUNG DÀNH CHO FRONTEND GỌI MỌI API OKX
-// ----------------------------------------------------
-app.use('/api/okx-proxy/*', async (req, res) => {
+// PROXY CHUNG DÀNH CHO FRONTEND GỌI MỌI API OKX (Hỗ trợ cả Private & Public)
+app.all('/api/okx-proxy/*', async (req, res) => {
   try {
     const targetPath = req.originalUrl.replace('/api/okx-proxy', '/api/v5');
     const method = req.method;
     const timestamp = new Date().toISOString();
     let bodyString = '';
 
-    if (method !== 'GET' && method !== 'HEAD' && req.body && Object.keys(req.body).length > 0) {
+    if (['POST', 'PUT', 'DELETE'].includes(method.toUpperCase()) && req.body && Object.keys(req.body).length > 0) {
       bodyString = JSON.stringify(req.body);
     }
 
     const signature = generateOkxSignature(timestamp, method, targetPath, bodyString);
 
     const headers = {
-      'OK-ACCESS-KEY': process.env.OKX_API_KEY || '',
+      'OK-ACCESS-KEY': OKX_API_KEY,
       'OK-ACCESS-SIGN': signature,
       'OK-ACCESS-TIMESTAMP': timestamp,
-      'OK-ACCESS-PASSPHRASE': process.env.OKX_PASSPHRASE || '',
+      'OK-ACCESS-PASSPHRASE': OKX_PASSPHRASE,
       'Content-Type': 'application/json'
     };
 
@@ -151,25 +141,29 @@ app.use('/api/okx-proxy/*', async (req, res) => {
     const response = await axios(axiosConfig);
     res.json(response.data);
   } catch (error) {
+    console.error(`❌ Lỗi Proxy OKX [${req.originalUrl}]:`, error.response?.data || error.message);
     res.status(error.response?.status || 500).json({ error: error.response ? error.response.data : error.message });
   }
 });
 
 /* ========================================================
-   VÒNG LẶP NGHẦM CHẠY TRÊN RENDER (24/7)
+   4. VÒNG LẶP CHẠY NGẦM 24/7 TRÊN RENDER
    ======================================================== */
 async function startServerAutoTradeLoop() {
   console.log("🚀 Server Bot đang chạy ngầm 24/7 trên Render...");
-  
   while (true) {
     try {
-      if (isAutoTradeRunning) {
-        // Thực hiện logic quyét/đặt lệnh ngầm tại đây nếu có
-        // console.log("[AUTO TRADE] Đang quét thị trường...");
+      if (isTrading) {
+        const response = await axios.get('https://www.okx.com/api/v5/market/tickers?instType=SWAP');
+        if (response.data && response.data.data) {
+          const usdtPairs = response.data.data.filter(item => item.instId.endsWith('-USDT-SWAP'));
+          usdtPairs.sort((a, b) => parseFloat(b.chg24h || 0) - parseFloat(a.chg24h || 0));
+
+          topPump = usdtPairs.slice(0, 5).map(item => ({ instId: item.instId, last: item.last, change24h: item.chg24h }));
+          topDump = usdtPairs.slice(-5).reverse().map(item => ({ instId: item.instId, last: item.last, change24h: item.chg24h }));
+        }
       }
-      
-      // Giữ nhịp quét 2 phút/lần (120,000 ms)
-      await new Promise(resolve => setTimeout(resolve, 120000));
+      await new Promise(resolve => setTimeout(resolve, 20000));
     } catch (err) {
       console.error("Lỗi vòng lặp Server Bot:", err.message);
       await new Promise(resolve => setTimeout(resolve, 10000));
