@@ -834,25 +834,28 @@ function ensureWS(){
       ws = null;
     }
   } catch(err) {}
+
+  clearInterval(pingIntervalId);
   
   ws = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
   
   ws.onopen = () => {
     reconnectAttempts = 0;
     log('✅ WS Connected');
+    
+    // Đăng ký nhận dữ liệu tickers (đã được chia nhỏ batch bên dưới)
     updateWSSubscriptions();
     
-    clearInterval(pingIntervalId);
+    // Gửi ping định kỳ 15s để giữ kết nối với OKX Server
     pingIntervalId = setInterval(() => {
       if(ws && ws.readyState === 1) {
-        // FIXED 1: Gửi chuỗi "ping" thô chuẩn API OKX thay vì JSON
         ws.send("ping");
       }
     }, 15000);
   };
   
   ws.onmessage = e => {
-    // FIXED 2: Bỏ qua phản hồi "pong" dạng chuỗi thô từ OKX
+    // Bỏ qua phản hồi pong dạng chuỗi thô từ OKX
     if (e.data === 'pong') return;
 
     try {
@@ -873,7 +876,7 @@ function ensureWS(){
           
           const isPump = topPump.includes(inst);
           
-          // *** LOGIC KIỂM TRA TP/SL CLIENT-SIDE (TRIGGER CHO HANDLEHIT) ***
+          // Logic kiểm tra TP/SL client-side
           if(pos.status === 'open'){
             let hit = null;
             
@@ -907,41 +910,42 @@ function ensureWS(){
   
   ws.onclose = () => {
     reconnectAttempts++;
-    const delay = Math.min(5000 + reconnectAttempts * 1000, 30000);
-    log(`⚠️ WS Disconnected, reconnect in ${delay/1000}s`);
     clearInterval(pingIntervalId);
+    
+    // Giảm thời gian reconnect cố định từ 5s-6s thay vì tăng quá lâu
+    const delay = Math.min(3000 + reconnectAttempts * 1000, 15000);
+    log(`⚠️ WS Disconnected, reconnect in ${delay/1000}s`);
+    
     setTimeout(ensureWS, delay);
   };
   
   ws.onerror = (err) => {
-    // FIXED 3: Bỏ .message để tránh hiện undefined trong Log
     log('❌ WS Error');
   };
 }
 
-function updateWSSubscriptions(){
-  ensureWS();
-  if(!ws || ws.readyState !== 1) return;
-  
-  const desired = [...new Set([...topPump, ...topDump])];
-  const add = desired.filter(i => !subscribedInsts.includes(i));
-  const rem = subscribedInsts.filter(i => !desired.includes(i));
-  
-  if(rem.length > 0){
-    ws.send(JSON.stringify({
-      op: 'unsubscribe',
-      args: rem.map(i => ({channel: 'tickers', instId: i}))
-    }));
-  }
-  
-  if(add.length > 0){
+// *** LƯU Ý BẮT BUỘC: SỬA HÀM updateWSSubscriptions KHÔNG GỬI QUÁ 20 COIN/LẦN ***
+function updateWSSubscriptions() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  // Gom các coin cần theo dõi
+  const activeSymbols = [...new Set([...topPump, ...topDump])];
+  if (activeSymbols.length === 0) return;
+
+  const args = activeSymbols.map(instId => ({
+    channel: 'tickers',
+    instId: instId
+  }));
+
+  // CỰC KỲ QUAN TRỌNG: Chia nhỏ tối đa 20 cặp/lần gửi để không bị OKX rớt kết nối
+  const CHUNK_SIZE = 20;
+  for (let i = 0; i < args.length; i += CHUNK_SIZE) {
+    const chunk = args.slice(i, i + CHUNK_SIZE);
     ws.send(JSON.stringify({
       op: 'subscribe',
-      args: add.map(i => ({channel: 'tickers', instId: i}))
+      args: chunk
     }));
   }
-  
-  subscribedInsts = desired.slice();
 }
 
 async function handleHit(inst, wasPump, reason){
