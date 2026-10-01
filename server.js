@@ -6,8 +6,11 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trạng thái Auto Trade chạy ngầm trên Server
+let isAutoTradeRunning = false;
+
 app.use(express.json());
-// Phục vụ tệp giao diện index.html tĩnh
+// Phục vụ tệp giao diện tĩnh
 app.use(express.static(path.join(__dirname)));
 
 // Hàm tạo chữ ký HMAC-SHA256 cho OKX Private API
@@ -17,23 +20,48 @@ function generateOkxSignature(timestamp, method, requestPath, body = '') {
   return crypto.createHmac('sha256', secretKey).update(message).digest('base64');
 }
 
-// Endpoint Health Check cho UptimeRobot giữ Render luôn chạy 24/7
+// ----------------------------------------------------
+// 0. ENDPOINTS QUẢN LÝ AUTOTRADE & HEALTH CHECK
+// ----------------------------------------------------
+
+// Health Check cho UptimeRobot
 app.get('/health', (req, res) => {
   res.status(200).send('OK - Bot is running');
 });
 
-// 1. PUBLIC API: Lấy giá thị trường (Không cần Secret/Passphrase)
+// Lấy trạng thái Auto Trade hiện tại (Giải quyết lỗi 404 từ Frontend)
+app.get('/api/autotrade/status', (req, res) => {
+  res.json({ success: true, running: isAutoTradeRunning });
+});
+
+// Bật/Tắt Auto Trade từ giao diện
+app.post('/api/autotrade/toggle', (req, res) => {
+  const { enabled } = req.body;
+  if (typeof enabled === 'boolean') {
+    isAutoTradeRunning = enabled;
+    console.log(`[BOT] Auto Trade đã được: ${isAutoTradeRunning ? 'BẬT 🟢' : 'TẮT 🔴'}`);
+  } else {
+    isAutoTradeRunning = !isAutoTradeRunning;
+  }
+  res.json({ success: true, running: isAutoTradeRunning });
+});
+
+// ----------------------------------------------------
+// 1. PUBLIC API: Lấy giá thị trường OKX
+// ----------------------------------------------------
 app.get('/api/okx/ticker', async (req, res) => {
   try {
     const instId = req.query.instId || 'BTC-USDT';
     const response = await axios.get(`https://www.okx.com/api/v5/market/ticker?instId=${instId}`);
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: error.response ? error.response.data : error.message });
+    res.status(error.response?.status || 500).json({ error: error.response ? error.response.data : error.message });
   }
 });
 
-// 2. PRIVATE API: Lấy số dư tài khoản (Yêu cầu đầy đủ 3 khóa + Signature)
+// ----------------------------------------------------
+// 2. PRIVATE API: Lấy số dư tài khoản
+// ----------------------------------------------------
 app.get('/api/okx/balance', async (req, res) => {
   try {
     const timestamp = new Date().toISOString();
@@ -54,11 +82,13 @@ app.get('/api/okx/balance', async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: error.response ? error.response.data : error.message });
+    res.status(error.response?.status || 500).json({ error: error.response ? error.response.data : error.message });
   }
 });
 
-// 3. PRIVATE API: Đặt lệnh giao dịch (POST Request)
+// ----------------------------------------------------
+// 3. PRIVATE API: Đặt lệnh giao dịch
+// ----------------------------------------------------
 app.post('/api/okx/order', async (req, res) => {
   try {
     const timestamp = new Date().toISOString();
@@ -80,11 +110,13 @@ app.post('/api/okx/order', async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: error.response ? error.response.data : error.message });
+    res.status(error.response?.status || 500).json({ error: error.response ? error.response.data : error.message });
   }
 });
 
-// 4. PROXY CHUNG DÀNH CHO FRONTEND GỌI MỌI API OKX KHÔNG BỊ LỖI CORS
+// ----------------------------------------------------
+// 4. PROXY CHUNG DÀNH CHO FRONTEND GỌI MỌI API OKX
+// ----------------------------------------------------
 app.use('/api/okx-proxy/*', async (req, res) => {
   try {
     const targetPath = req.originalUrl.replace('/api/okx-proxy', '/api/v5');
@@ -124,13 +156,19 @@ app.use('/api/okx-proxy/*', async (req, res) => {
 });
 
 /* ========================================================
-   VÒNG LẶP NGHẦM CHẠY TRÊN RENDER (KHÔNG CẦN BẬT TRÌNH DUYỆT)
+   VÒNG LẶP NGHẦM CHẠY TRÊN RENDER (24/7)
    ======================================================== */
 async function startServerAutoTradeLoop() {
   console.log("🚀 Server Bot đang chạy ngầm 24/7 trên Render...");
+  
   while (true) {
     try {
-      // Thực hiện giữ nhịp quét ngầm 2 phút/lần
+      if (isAutoTradeRunning) {
+        // Thực hiện logic quyét/đặt lệnh ngầm tại đây nếu có
+        // console.log("[AUTO TRADE] Đang quét thị trường...");
+      }
+      
+      // Giữ nhịp quét 2 phút/lần (120,000 ms)
       await new Promise(resolve => setTimeout(resolve, 120000));
     } catch (err) {
       console.error("Lỗi vòng lặp Server Bot:", err.message);
