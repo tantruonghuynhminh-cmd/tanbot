@@ -282,59 +282,91 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
   }
   
   try {
-    // 2. LẤY THÔNG TIN CẶP TRADE VÀ LOGIC TỰ ĐỘNG HẠ ĐÒN BẨY KHI BỊ GIỚI HẠN OKX
-    const instRes = await safeFetch(`${OKX_API_BASE}/public/instruments?instType=SWAP&instId=${instId}`);
-    const info = instRes?.data?.[0];
-    if (!info) return null;
+    // 2. LẤY THÔNG TIN CẶP TRADE
+const instRes = await safeFetch(
+    `${OKX_API_BASE}/public/instruments?instType=SWAP&instId=${instId}`
+);
 
-    const ctVal = parseFloat(info.ctVal);
-    const lotSz = parseFloat(info.lotSz);
-    const minSz = parseFloat(info.minSz || lotSz);
-    const qPrec = info.lotSz.includes('.') ? info.lotSz.split('.')[1].length : 0;
+const info = instRes?.data?.[0];
 
-    let currentLeverage = leverage;
-    let qtyStr = "";
-    let leverageFixed = false;
+if (!info) return null;
 
-    while (currentLeverage >= 10) {
-        const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
-            instId,
-            lever: currentLeverage.toString(),
-            mgnMode: 'cross'
-        });
 
-        if (levRes?.code === '0' || levRes?.code === '32115') {
+// 🛡️ CHỐNG TRÙNG VỊ THẾ LONG + SHORT CÙNG 1 COIN
+const posRes = await okxApiRequest('/account/positions', 'GET', {
+    instType: 'SWAP',
+    instId
+});
 
-            let rawQty = (capital * currentLeverage) / (price * ctVal);
+const existingPos = posRes?.data?.find(
+    p => p.instId === instId &&
+         Math.abs(parseFloat(p.pos || 0)) > 0
+);
 
-            let qty = Math.floor(rawQty / lotSz) * lotSz;
+if (existingPos) {
+    log(
+        `⛔ ${instId}: Đã có vị thế ${
+            parseFloat(existingPos.pos) > 0 ? 'LONG' : 'SHORT'
+        } → không mở thêm.`
+    );
+    return null;
+}
 
-            if (qty < minSz) {
-                log(`⚠️ ${instId}: Vốn ${capital} USDT không đủ để mở vị thế tối thiểu.`);
-                return null;
-            }
 
-            qtyStr = qPrec > 0 ? qty.toFixed(qPrec) : String(Math.round(qty));
-            leverageFixed = true;
-            break;
+// TIẾP TỤC LOGIC CŨ
+const ctVal = parseFloat(info.ctVal);
+const lotSz = parseFloat(info.lotSz);
+const minSz = parseFloat(info.minSz || lotSz);
+const qPrec = info.lotSz.includes('.')
+    ? info.lotSz.split('.')[1].length
+    : 0;
 
-        } else if (levRes?.code === '59102') {
+let currentLeverage = leverage;
+let qtyStr = "";
+let leverageFixed = false;
 
-            if (currentLeverage > 50) currentLeverage = 50;
-            else if (currentLeverage > 30) currentLeverage = 30;
-            else if (currentLeverage > 20) currentLeverage = 20;
-            else if (currentLeverage > 10) currentLeverage = 10;
-            else break;
+while (currentLeverage >= 10) {
 
-            log(`🔄 ${instId}: Hạ đòn bẩy xuống ${currentLeverage}x`);
+    const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
+        instId,
+        lever: currentLeverage.toString(),
+        mgnMode: 'cross'
+    });
 
-        } else {
-            log(`❌ Set leverage lỗi: ${levRes?.code} ${levRes?.msg || ''}`);
+    if (levRes?.code === '0' || levRes?.code === '32115') {
+
+        let rawQty = (capital * currentLeverage) / (price * ctVal);
+        let qty = Math.floor(rawQty / lotSz) * lotSz;
+
+        if (qty < minSz) {
+            log(`⚠️ ${instId}: Vốn ${capital} USDT không đủ để mở vị thế tối thiểu.`);
             return null;
         }
-    }
 
-    if (!leverageFixed) return null;
+        qtyStr = qPrec > 0
+            ? qty.toFixed(qPrec)
+            : String(Math.round(qty));
+
+        leverageFixed = true;
+        break;
+
+    } else if (levRes?.code === '59102') {
+
+        if (currentLeverage > 50) currentLeverage = 50;
+        else if (currentLeverage > 30) currentLeverage = 30;
+        else if (currentLeverage > 20) currentLeverage = 20;
+        else if (currentLeverage > 10) currentLeverage = 10;
+        else break;
+
+        log(`🔄 ${instId}: Hạ đòn bẩy xuống ${currentLeverage}x`);
+
+    } else {
+        log(`❌ Set leverage lỗi: ${levRes?.code} ${levRes?.msg || ''}`);
+        return null;
+    }
+}
+
+if (!leverageFixed) return null;
 
     // 3. TẠO LỆNH TP/SL ĐÍNH KÈM (ATTACH ALGO ORDS)
     const attachAlgoOrds = [
