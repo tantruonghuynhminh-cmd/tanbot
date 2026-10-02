@@ -663,7 +663,7 @@ async function scanOnce(){
               .then(order => {
                 if (order) positions[inst].hasOrder = true;
               })
-              .catch(err => log(`Lỗi đặt lệnh buy ${inst} (song song): ${err.message}`)) 
+              .catch(err => log(`Lỗi đặt lệnh long ${inst} (song song): ${err.message}`)) 
           );
         }
       }
@@ -675,7 +675,7 @@ async function scanOnce(){
               .then(order => {
                 if (order) positions[inst].hasOrder = true;
               })
-              .catch(err => log(`Lỗi đặt lệnh sell ${inst} (song song): ${err.message}`))
+              .catch(err => log(`Lỗi đặt lệnh short ${inst} (song song): ${err.message}`))
           );
         }
       }
