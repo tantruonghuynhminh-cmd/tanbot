@@ -278,7 +278,7 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
 
   try {
     // 2. LẤY THÔNG TIN CẶP TRADE VÀ LOGIC TỰ ĐỘNG HẠ ĐÒN BẨY KHI BỊ GIỚI HẠN OKX
-    const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${instId}`);
+    const instRes = await safeFetch(`${OKX_API_BASE}/public/instruments?instType=SWAP&instId=${instId}`);
     const info = instRes?.data?.[0];
     if (!info) return null;
 
