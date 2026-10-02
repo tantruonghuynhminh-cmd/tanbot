@@ -303,14 +303,12 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
     // Không gọi lại /account/positions để tránh ảnh hưởng cơ chế xác thực hiện tại.
 
     // 3. KIỂM TRA GIỚI HẠN TỐI ĐA 10 VỊ THẾ
-    if (
-      Object.keys(activeOrders).filter(
-        key =>
-          activeOrders[key] &&
-          activeOrders[key].pending !== true &&
-          activeOrders[key].status !== 'closed'
-      ).length >= 10
-    ) {
+    // Tính tổng tất cả vị thế đang có + các lệnh đang trong quá trình xử lý (pending)
+    const currentActiveCount = Object.keys(activeOrders).filter(
+      key => activeOrders[key] && activeOrders[key].status !== 'closed'
+    ).length;
+
+    if (currentActiveCount > 10) {
       log(`⚠️ BOT đang có tối đa 10 vị thế/lệnh. Không mở thêm ${instId}`);
       return null;
     }
@@ -318,12 +316,7 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
     // 4. ĐỒNG BỘ VỊ THẾ CŨ VÀO BOT
     // activeOrders đã chứa các vị thế/lệnh cũ được BOT khôi phục.
 
-    log(`✅ Đang có ${Object.keys(activeOrders).filter(
-      key =>
-        activeOrders[key] &&
-        activeOrders[key].pending !== true &&
-        activeOrders[key].status !== 'closed'
-    ).length}/10 vị thế/lệnh. Cho phép xem xét mở ${instId}.`);
+    log(`✅ Đang có ${currentActiveCount - 1}/10 vị thế/lệnh. Cho phép xem xét mở ${instId}.`);
 
     // 5. LẤY THÔNG TIN CẶP TRADE
     const instRes = await safeFetch(
