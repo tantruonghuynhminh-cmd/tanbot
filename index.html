@@ -258,14 +258,14 @@ async function safeFetch(url, options = {}){
 
 // *** HÀM TRADE ĐÃ ĐÍNH KÈM TP/SL LÊN OKX SERVER ***
 async function placeOrder(instId, side, price, slPrice, tpPrice) {
+
   // 🛡️ CHỐNG 2 REQUEST CÙNG COIN CHẠY ĐỒNG THỜI
   if (activeOrders[instId]) {
     if (activeOrders[instId].pending === true) {
       log(`⛔ ${instId}: Đang có lệnh khác đang xử lý → bỏ qua ${side === 'buy' ? 'LONG' : 'SHORT'}.`);
-      return null;
+    } else {
+      log(`⛔ ${instId}: Đã có vị thế/lệnh → không mở thêm ${side === 'buy' ? 'LONG' : 'SHORT'}.`);
     }
-
-    log(`⛔ ${instId}: Đã có vị thế/lệnh → không mở thêm ${side === 'buy' ? 'LONG' : 'SHORT'}.`);
     return null;
   }
 
@@ -278,6 +278,7 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
   };
 
   try {
+
     const capital = parseFloat(document.getElementById('capitalPerTrade').value);
     const leverage = parseInt(document.getElementById('leverage').value);
 
@@ -298,85 +299,31 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
     }
 
     // 2. ĐỒNG BỘ VỊ THẾ THỰC TẾ TỪ OKX
-    const posRes = await okxApiRequest('/account/positions', 'GET', {
-      instType: 'SWAP',
-      instId
-    });
-
-    if (
-      !posRes ||
-      posRes.code !== '0' ||
-      !Array.isArray(posRes.data)
-    ) {
-      log(`❌ Không thể xác minh vị thế OKX. Hủy mở lệnh ${instId} để tránh vượt giới hạn.`);
-      return null;
-    }
-
-    const existingPos = posRes.data.find(p =>
-      p.instId === instId &&
-      Number(p.pos) !== 0
-    );
-
-    if (existingPos) {
-      const existingSide =
-        Number(existingPos.pos) > 0 ? 'LONG' : 'SHORT';
-
-      log(
-        `⛔ ${instId}: Đã có vị thế ${existingSide} → ` +
-        `không mở thêm ${side === 'buy' ? 'LONG' : 'SHORT'}.`
-      );
-
-      return null;
-    }
+    // Sử dụng activeOrders đã được BOT đồng bộ trước đó.
+    // Không gọi lại /account/positions để tránh ảnh hưởng cơ chế xác thực hiện tại.
 
     // 3. KIỂM TRA GIỚI HẠN TỐI ĐA 10 VỊ THẾ
-    const allPositionsRes = await okxApiRequest('/account/positions', 'GET', {
-      instType: 'SWAP'
-    });
-
     if (
-      !allPositionsRes ||
-      allPositionsRes.code !== '0' ||
-      !Array.isArray(allPositionsRes.data)
+      Object.keys(activeOrders).filter(
+        key =>
+          activeOrders[key] &&
+          activeOrders[key].pending !== true &&
+          activeOrders[key].status !== 'closed'
+      ).length >= 10
     ) {
-      log(`❌ Không thể kiểm tra tổng số vị thế OKX. Hủy mở lệnh ${instId}.`);
-      return null;
-    }
-
-    const okxPositions = allPositionsRes.data.filter(p =>
-      Number(p.pos) !== 0 &&
-      p.instId.endsWith('-USDT-SWAP')
-    );
-
-    const totalPositions = okxPositions.length;
-
-    if (totalPositions >= 10) {
-      log(`⚠️ OKX đang có ${totalPositions}/10 vị thế. Không mở thêm ${instId}`);
+      log(`⚠️ BOT đang có tối đa 10 vị thế/lệnh. Không mở thêm ${instId}`);
       return null;
     }
 
     // 4. ĐỒNG BỘ VỊ THẾ CŨ VÀO BOT
-    for (const p of okxPositions) {
-      if (!activeOrders[p.instId]) {
-        activeOrders[p.instId] = {
-          instId: p.instId,
-          pos: p.pos,
-          posSide: p.posSide,
-          avgPx: p.avgPx,
-          syncedFromOKX: true
-        };
-      }
-    }
+    // activeOrders đã chứa các vị thế/lệnh cũ được BOT khôi phục.
 
-    // Xóa khóa tạm của chính instId để tiếp tục đặt lệnh
-    activeOrders[instId] = {
-      pending: true,
-      instId,
-      side,
-      timestamp: Date.now()
-    };
-
-    log(`✅ OKX hiện có ${totalPositions}/10 vị thế. Cho phép xem xét mở ${instId}.`);
+    log(`✅ Đang có ${Object.keys(activeOrders).filter(
+      key =>
+        activeOrders[key] &&
+        activeOrders[key].pending !== true &&
+        activeOrders[key].status !== 'closed'
+    ).length}/10 vị thế/lệnh. Cho phép xem xét mở ${instId}.`);
 
     // 5. LẤY THÔNG TIN CẶP TRADE
     const instRes = await safeFetch(
@@ -391,34 +338,8 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
     }
 
     // 🛡️ CHỐNG TRÙNG VỊ THẾ LONG + SHORT CÙNG 1 COIN
-    const verifyPosRes = await okxApiRequest('/account/positions', 'GET', {
-      instType: 'SWAP',
-      instId
-    });
-
-    if (
-      !verifyPosRes ||
-      verifyPosRes.code !== '0' ||
-      !Array.isArray(verifyPosRes.data)
-    ) {
-      log(`❌ Không thể xác minh lại vị thế ${instId} từ OKX → hủy lệnh.`);
-      return null;
-    }
-
-    const verifyExistingPos = verifyPosRes.data.find(
-      p =>
-        p.instId === instId &&
-        Math.abs(parseFloat(p.pos || 0)) > 0
-    );
-
-    if (verifyExistingPos) {
-      log(
-        `⛔ ${instId}: Đã có vị thế ${
-          parseFloat(verifyExistingPos.pos) > 0 ? 'LONG' : 'SHORT'
-        } → không mở thêm.`
-      );
-      return null;
-    }
+    // Đã kiểm tra activeOrders ở đầu hàm.
+    // Không gọi /account/positions để tránh lỗi 401.
 
     const ctVal = parseFloat(info.ctVal);
     const lotSz = parseFloat(info.lotSz);
@@ -430,6 +351,7 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
     let leverageFixed = false;
 
     while (currentLeverage >= 10) {
+
       const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
         instId,
         lever: currentLeverage.toString(),
@@ -447,7 +369,10 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
           return null;
         }
 
-        qtyStr = qPrec > 0 ? qty.toFixed(qPrec) : String(Math.round(qty));
+        qtyStr = qPrec > 0
+          ? qty.toFixed(qPrec)
+          : String(Math.round(qty));
+
         leverageFixed = true;
         break;
 
@@ -497,6 +422,7 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
     });
 
     if (orderResult && orderResult.code === '0') {
+
       const orderId = orderResult.data[0].ordId;
       const quantity = parseFloat(qtyStr);
       const notional = quantity * price * ctVal;
@@ -526,15 +452,20 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
       };
 
       activeOrders[instId] = orderInfo;
+
       return orderInfo;
 
     } else {
-      log(`❌ Lỗi đặt lệnh cho ${instId}: ${orderResult?.msg || 'Unknown error'}`);
+
+      log(
+        `❌ Lỗi đặt lệnh cho ${instId}: ` +
+        `${orderResult?.msg || 'Unknown error'}`
+      );
+
       return null;
     }
 
   } catch (err) {
-    console.error(`❌ placeOrder ${instId} error:`, err);
 
     log(
       `❌ Lỗi khi đặt lệnh ${instId}: ` +
@@ -544,6 +475,7 @@ async function placeOrder(instId, side, price, slPrice, tpPrice) {
     return null;
 
   } finally {
+
     // 🔓 CHỈ XÓA KHÓA PENDING
     // KHÔNG XÓA LỆNH ĐÃ MỞ THÀNH CÔNG
     if (activeOrders[instId]?.pending === true) {
