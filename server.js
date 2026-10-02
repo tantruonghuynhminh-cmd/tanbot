@@ -7,9 +7,9 @@ const crypto = require('crypto');
 const path = require('path');
 
 // Cấu hình thông tin API OKX (Ưu tiên Lấy từ biến môi trường Render)
-const OKX_API_KEY = process.env.OKX_API_KEY || '9eec71cf-b692-4c5c-9869-27e6ece48e0b';
-const OKX_SECRET_KEY = process.env.OKX_SECRET_KEY || '8C07B300FE8DEA411762AB34C232AD6F';
-const OKX_PASSPHRASE = process.env.OKX_PASSPHRASE || 'Hongnguyen@1987';
+const OKX_API_KEY = process.env.OKX_API_KEY || '7ffea234-8094-4f4c-91f6-1773d2370b5c';
+const OKX_SECRET_KEY = process.env.OKX_SECRET_KEY || '55D97BC2B8E2457EAA62F6152BEE9C03';
+const OKX_PASSPHRASE = process.env.OKX_PASSPHRASE || 'Minhtantruong@1688';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
