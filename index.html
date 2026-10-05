@@ -2011,7 +2011,7 @@ if (pnlPct >= tpThreshold) {
     finalTP = st.tp || st.currentTP;
 }
 
-                /* ================= 2. SL TRAILING & BUFFER (NÂNG CẤP XÁC NHẬN NẾN) ================= */
+               /* ================= 2. SL TRAILING & BUFFER (NÂNG CẤP XÁC NHẬN NẾN) ================= */
 let proposedSL = null; 
 const holdTimeMins = (Date.now() - st.ts) / 60000; // Tính thời gian giữ lệnh theo phút
 
@@ -2026,26 +2026,30 @@ if (forceSLtoOldTP && st.tp) {
 } 
 // B. REVERSAL: Đánh đảo chiều cần khóa lãi cực nhanh nhưng vẫn cần nến "thở"
 else if (st.tradeCase?.includes("Rev") && pnlPct >= 30) {
-    let revGap = 15; // Giảm Gap xuống 15 để giữ lại 15% lãi (thay vì 10%)
-    proposedSL = entry * (1 + (isLong ? (pnlPct - revGap) / 100 / leverage : -(pnlPct - revGap) / 100 / leverage));
+    proposedSL = isLong
+        ? last - (st.atr * 1.5)
+        : last + (st.atr * 1.5);
 }
 // C. TREND & SPECIAL: Lãi lớn (PNL >= 50% - Đã gỡ TP)
 else if (pnlPct >= 50) {
     // Tinh chỉnh Gap để bám sát giá hơn khi gồng trend vô cực
-    let gap = st.isSpecial ? (pnlPct >= 100 ? 30 : 40) : (pnlPct >= 100 ? 35 : (pnlPct >= 70 ? 25 : 30));
-    proposedSL = entry * (1 + (isLong ? (pnlPct - gap) / 100 / leverage : -(pnlPct - gap) / 100 / leverage));
+    proposedSL = isLong
+        ? last - (st.atr * 1.5)
+        : last + (st.atr * 1.5);
 }
 // D. LÃI TRUNG BÌNH (25% - 50%)
 else if (pnlPct >= 25 && isConfirmed) { 
     let miniGap = 15; // Giữ Gap 15% (Ví dụ lãi 40% khóa 25%)
-    proposedSL = entry * (1 + (isLong ? (pnlPct - miniGap) / 100 / leverage : -(pnlPct - miniGap) / 100 / leverage));
+    proposedSL = isLong
+        ? last - (st.atr * 1.5)
+        : last + (st.atr * 1.5);
 }
 /* ---------- FIX: TRAILING KHI LÃI < 25% (ĐÃ GỘP ĐỂ TRÁNH GHI ĐÈ) ---------- */
 else if (pnlPct >= 10 && isConfirmed) {
     // Giữ khoảng cách SL cách giá hiện tại một khoảng 15% (tránh râu nến)
-    let buffer = 15; 
-    let newSLPct = pnlPct - buffer;
-    proposedSL = entry * (1 + (isLong ? newSLPct / 100 / leverage : -newSLPct / 100 / leverage));
+    proposedSL = isLong
+        ? last - (st.atr * 1.5)
+        : last + (st.atr * 1.5);
 }
 // E. BẢO VỆ VỐN (15%): Chỉ dời về Entry khi nến đã ổn định (>10p)
 else if (pnlPct >= 15 && isConfirmed) { 
