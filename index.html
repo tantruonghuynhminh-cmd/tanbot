@@ -1989,6 +1989,17 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
             );
         }
 
+        /* KHÔNG ĐƯỢC HẠ TP XUỐNG DƯỚI TP BAN ĐẦU */
+        if (
+            Number.isFinite(Number(st.tp)) &&
+            Number(st.tp) > 0
+        ) {
+            dynamicTP = Math.max(
+                dynamicTP,
+                Number(st.tp)
+            );
+        }
+
     } else {
 
         dynamicTP = last - atrNow * 0.5;
@@ -2001,6 +2012,17 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
             dynamicTP = Math.max(
                 dynamicTP,
                 last - (last - bb) * 0.7
+            );
+        }
+
+        /* KHÔNG ĐƯỢC HẠ TP XUỐNG DƯỚI TP BAN ĐẦU */
+        if (
+            Number.isFinite(Number(st.tp)) &&
+            Number(st.tp) > 0
+        ) {
+            dynamicTP = Math.min(
+                dynamicTP,
+                Number(st.tp)
             );
         }
     }
@@ -2133,11 +2155,14 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
      * ======================================================= */
 
     if (
+        pnlPct > 0 &&
         (
-            dropFromPeak >= dropTrigger &&
-            awayFromPeak
-        ) ||
-        isBlackSwanExit
+            (
+                dropFromPeak >= dropTrigger &&
+                awayFromPeak
+            ) ||
+            isBlackSwanExit
+        )
     ) {
 
         console.log(
