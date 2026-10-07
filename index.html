@@ -1760,7 +1760,7 @@ for (const p of pool) {
   } catch (e) {
     console.error('❌ masterFlow error:', e);
   }
-
+}
 /* ================== MONITORING & UI (FIXED) ================== */
 async function monitorOrders() {
     activeOrders = JSON.parse(localStorage.getItem('okx_active_orders')) || {};
