@@ -1880,7 +1880,6 @@ if (pnlPct <= -50 && (st?.sl || st?.currentSL)) {
         continue;
     }
 }
-
 /* ================= ĐẢO CHIỀU: -30% + PATTERN M15 ================= */
 if (true) {
 
@@ -2305,7 +2304,7 @@ if (true) {
         }
     }
 }
-
+              
 /* ================= 1. TP & BUFFER (PURE SINGLE-STEP DYNAMIC TP) ================= */
 
 if (!st.tpBuffer) st.tpBuffer = [last];
@@ -2447,7 +2446,8 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
     finalTP = st.tp || st.currentTP;
 }
 
-              /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
+
+               /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
 let proposedSL = null; 
 const holdTimeMins = (Date.now() - st.ts) / 60000;
 const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10; 
