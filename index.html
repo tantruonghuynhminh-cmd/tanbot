@@ -1614,30 +1614,35 @@ for (const p of selectedPool) {
     // GIỮ NGUYÊN toàn bộ code đặt lệnh bên dưới
 
    /* ===============================
- * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT (GUARANTEED ENTRY FIX)
- * =============================== */
+* 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT (GUARANTEED ENTRY FIX)
+* =============================== */
 
-// Cập nhật lại openIds thực tế trước khi lặp
+// 🟢 FIX ĐIỂM NGHẼN: Cập nhật lại openIds thực tế từ OKX trước khi lặp (Tránh bị kẹt ID lệnh cũ)
+// Giả định biến openPositions chứa danh sách vị thế thực tế từ Bước 1
 if (typeof openPositions !== 'undefined') {
     openIds = new Set(openPositions.map(p => p.instId));
 }
 
-for (const p of selectedPool) {
-    // 1. Kiểm tra giới hạn số lượng vị thế đang mở
+for (const p of pool) {
+    // 1. Kiểm tra giới hạn số lượng vị thế đang mở thực tế
     if (openIds.size >= MAX_POSITIONS) {
         log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
         break;
     }
     
     if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
+    
+    // 2. Bỏ qua nếu mã này ĐANG MỞ VỊ THẾ THỰC TẾ trên OKX
     if (openIds.has(p.instId)) continue;
 
     const now = Date.now();
 
     try {
+        // FIX LỖI 1: Chuẩn hóa side về chữ thường ('buy' hoặc 'sell')
         const sideLower = String(p.side).toLowerCase();
         if (sideLower !== 'buy' && sideLower !== 'sell') continue;
 
+        // Xác định posSide chính xác 100% không lo lỗi hoa/thường
         const posSide = sideLower === 'buy' ? 'long' : 'short';
 
         const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${p.instId}`);
@@ -1655,23 +1660,15 @@ for (const p of selectedPool) {
         let uiLeverage = parseInt(document.getElementById('leverage')?.value || 50);
         if (isNaN(uiLeverage) || uiLeverage < 1) uiLeverage = 50;
 
-        // TÍNH SỐ LƯỢNG (QTY) THEO ĐÒN BẨY GỐC UI (Đảm bảo giá trị vị thế mong muốn)
-        const rawTargetQty = (fixedMarginPerOrder * uiLeverage) / (p.last * ctVal);
-        let targetQty = Math.floor(rawTargetQty / lotSz) * lotSz;
-
-        // Nếu khối lượng < minSz, tự động đưa về minSz để không bỏ lỡ lệnh
-        if (targetQty < minSz) {
-            targetQty = minSz;
-        }
-
         const allLeverages = [100, 75, 50, 30, 20, 10, 5, 3, 2, 1];
         const levStepList = [uiLeverage, ...allLeverages]
             .filter((v, i, a) => a.indexOf(v) === i && v <= Math.max(uiLeverage, 100))
             .sort((a, b) => b - a);
 
         let selectedLeverage = null;
+        let selectedQty = 0;
 
-        // DÒ ĐÒN BẨY CAO NHẤT SÀN CHO PHÉP
+        // 1. DÒ LEVERAGE: Ưu tiên cao -> Hạ dần
         for (const lev of levStepList) {
             const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
                 instId: p.instId,
@@ -1681,8 +1678,19 @@ for (const p of selectedPool) {
             });
 
             if (levRes?.code === '0' || levRes?.code === '32115') {
-                selectedLeverage = lev;
-                break;
+                const rawQty = (fixedMarginPerOrder * lev) / (p.last * ctVal);
+                const calculatedQty = Math.floor(rawQty / lotSz) * lotSz;
+
+                if (calculatedQty >= minSz) {
+                    selectedLeverage = lev;
+                    selectedQty = calculatedQty;
+                    break;
+                }
+
+                if (!selectedLeverage) {
+                    selectedLeverage = lev;
+                    selectedQty = calculatedQty;
+                }
             }
         }
 
@@ -1691,43 +1699,38 @@ for (const p of selectedPool) {
             continue;
         }
 
-        // TÍNH KÝ QUỸ THỰC TẾ DỰA TRÊN ĐÒN BẨY ĐÃ SETUP CỦA SÀN
-        const actualMargin = (targetQty * p.last * ctVal) / selectedLeverage;
-        const finalQty = qPrec > 0 ? targetQty.toFixed(qPrec) : String(Math.round(targetQty));
+        // 2. NẾU CHƯA ĐẠT MIN_SZ → BỎ QUA
+        if (selectedQty < minSz) {
+            log(`⚠️ BỎ QUA ${p.instId}: Vốn $${fixedMarginPerOrder} với Lev ${selectedLeverage}x không đủ đạt minSz (${minSz} hợp đồng).`);
+            continue;
+        }
+
+        // 3. TÍNH KÝ QUỸ THỰC TẾ
+        const actualMargin = (selectedQty * p.last * ctVal) / selectedLeverage;
+
+        const finalQty = qPrec > 0 ? selectedQty.toFixed(qPrec) : String(Math.round(selectedQty));
         if (!finalQty || parseFloat(finalQty) <= 0) continue;
 
-        log(`Coin: ${p.instId} | Side: ${sideLower.toUpperCase()} (${posSide.toUpperCase()}) | Leverage: ${selectedLeverage}x | Qty: ${finalQty} | Actual Margin: $${actualMargin.toFixed(4)}`);
+        log(`Coin: ${p.instId} | Side: ${sideLower.toUpperCase()} (${posSide.toUpperCase()}) | Leverage: ${selectedLeverage}x | Qty: ${finalQty} | Target Margin: $${fixedMarginPerOrder} | Actual Margin: $${actualMargin.toFixed(4)}`);
 
         const tpStr = (Math.round(p.tp / tickSz) * tickSz).toFixed(pPrec);
         const slStr = (Math.round(p.sl / tickSz) * tickSz).toFixed(pPrec);
 
-        // BƯỚC 1: ĐẶT LỆNH MARKET TRƯỚC
+        // 4. BẮT ĐẦU ĐẶT LỆNH MARKET
         const res = await okxApiRequest('/trade/order', 'POST', {
             instId: p.instId,
             tdMode: 'cross',
             side: sideLower,
             posSide: posSide,
             ordType: 'market',
-            sz: finalQty
+            sz: finalQty,
+            attachAlgoOrds: [
+                { algoOrdType: 'take_profit', tpTriggerPx: tpStr, tpOrdPx: '-1' },
+                { algoOrdType: 'stop_loss', slTriggerPx: slStr, slOrdPx: '-1' }
+            ]
         });
 
-        // BƯỚC 2: NẾU THÀNH CÔNG THÌ TÁCH GỬI LỆNH ALGO ĐẶT TP/SL (OCO)
         if (res?.code === '0') {
-            const closeSide = sideLower === 'buy' ? 'sell' : 'buy';
-            
-            await okxApiRequest('/trade/order-algo', 'POST', {
-                instId: p.instId,
-                tdMode: 'cross',
-                side: closeSide,
-                posSide: posSide,
-                ordType: 'oco',
-                sz: finalQty,
-                tpTriggerPx: tpStr, 
-                tpOrdPx: '-1',
-                slTriggerPx: slStr, 
-                slOrdPx: '-1'
-            });
-
             if (typeof activeOrders !== 'undefined') {
                 activeOrders[p.instId] = {
                     instId: p.instId,
@@ -1743,7 +1746,7 @@ for (const p of selectedPool) {
                 };
             }
 
-            log(`✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | Case: ${p.tradeCase || 'Normal'} | Entry: ${p.last} | Lev: ${selectedLeverage}x | TP/SL: OK`);
+            log(`✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | Case: ${p.tradeCase} | Entry: ${p.last} | Lev: ${selectedLeverage}x | TP/SL: OK`);
 
             const msg = `🚀 SUPPER BOT TÂN VÀO LỆNH THÀNH CÔNG\n` +
                         `💎 Coin: ${p.instId.replace('-USDT-SWAP','')}\n` +
@@ -1756,7 +1759,7 @@ for (const p of selectedPool) {
 
             if (typeof sendTelegram === 'function') sendTelegram(msg);
 
-            // Cập nhật lại danh sách vị thế ngay lập tức
+            // Cập nhật lại danh sách vị thế đang mở ngay lập tức
             openIds.add(p.instId);
 
             if (typeof saveOrders === 'function') saveOrders();
@@ -2396,11 +2399,9 @@ if (true) {
 
 
 
-/* ================= TP ENGINE: AUTO SYNC + ADAPTIVE TRAILING TP ================= */
-
+/* ================= TP ENGINE: AUTO SYNC + TRAILING TP FIX ================= */
 let forceSLtoOldTP = false;
-let finalTP = st.tp || st.currentTP;
-
+    let finalTP = st.tp || st.currentTP;
 if (!globalThis.__tpEngineState)
     globalThis.__tpEngineState = {};
 
@@ -2460,9 +2461,7 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
 
                 const matchingAlgos = tpAlgoList.filter(a => {
                     if (a.instId !== p.instId) return false;
-
-                    if (a.side !== (positionIsLong ? 'sell' : 'buy'))
-                        return false;
+                    if (a.side !== (positionIsLong ? 'sell' : 'buy')) return false;
 
                     if (
                         a.posSide &&
@@ -2503,7 +2502,6 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
                     `/market/ticker?instId=${encodeURIComponent(p.instId)}`,
                     'GET'
                 );
-
                 const marketPrice = Number(tickerRes?.data?.[0]?.last);
 
                 if (!(marketPrice > 0)) {
@@ -2564,8 +2562,7 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
                     globalThis.__tpEngineState[stateKey] = {
                         peakPrice: marketPrice,
                         lastAmend: 0,
-                        lastAmendPeak: marketPrice,
-                        bestPnlPct: pnlPct
+                        lastAmendPeak: marketPrice
                     };
                 }
 
@@ -2579,170 +2576,27 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
                     tpState.peakPrice = marketPrice;
                 }
 
-                tpState.bestPnlPct = Math.max(
-                    Number(tpState.bestPnlPct) || pnlPct,
-                    pnlPct
-                );
-
-                // ADAPTIVE TRAILING: bước trailing giảm khi lợi nhuận tính theo ATR tăng
-                const favorableMove = positionIsLong
-                    ? tpState.peakPrice - entryPrice
-                    : entryPrice - tpState.peakPrice;
-
-                const profitATR = Math.max(0, favorableMove / atrNow);
-
-                const trailFactor = Math.max(
-                    0.03,
-                    Math.min(0.20, 0.20 / (1 + profitATR))
-                );
-
+                // Chỉ nâng TP khi giá tiếp tục đi thuận chiều ít nhất 0,3 ATR
                 const peakAdvance = positionIsLong
                     ? tpState.peakPrice - tpState.lastAmendPeak
                     : tpState.lastAmendPeak - tpState.peakPrice;
 
-                const minAdvance = Math.max(
-                    marketPrice * 0.0005,
-                    atrNow * trailFactor
-                );
-
-                // ĐỘNG LƯỢNG SUY YẾU:
-                // LONG: giá thoái lui khỏi đỉnh hoặc 2 nến đóng liên tiếp giảm.
-                // SHORT: giá bật lên khỏi đáy hoặc 2 nến đóng liên tiếp tăng.
-                if (
-                    peakAdvance < minAdvance &&
-                    !(
-                        positionIsLong
-                            ? (
-                                marketPrice < tpState.peakPrice - atrNow * 0.25 ||
-                                (
-                                    Number(candles[candles.length - 2]?.[4]) <
-                                    Number(candles[candles.length - 3]?.[4]) &&
-                                    Number(candles[candles.length - 3]?.[4]) <
-                                    Number(candles[candles.length - 4]?.[4])
-                                )
-                            )
-                            : (
-                                marketPrice > tpState.peakPrice + atrNow * 0.25 ||
-                                (
-                                    Number(candles[candles.length - 2]?.[4]) >
-                                    Number(candles[candles.length - 3]?.[4]) &&
-                                    Number(candles[candles.length - 3]?.[4]) >
-                                    Number(candles[candles.length - 4]?.[4])
-                                )
-                            )
-                    )
-                ) {
+                if (peakAdvance < atrNow * 0.3) {
                     console.log(
-                        `⏳ TP ${p.instId} ${posSide}: ROI=${pnlPct.toFixed(2)}%, ` +
-                        `chờ giá đi thuận thêm ${minAdvance} | Peak=${tpState.peakPrice}`
+                        `⏳ TP ${p.instId} ${posSide}: ROI ${pnlPct.toFixed(2)}%, ` +
+                        `chờ giá đi thuận thêm 0,3 ATR | TP=${activeTP}, ` +
+                        `Giá=${marketPrice}, Peak=${tpState.peakPrice}`
                     );
                     continue;
                 }
 
-                const tpDistance = Math.abs(activeTP - marketPrice);
+                const dynamicTP = positionIsLong
+                    ? activeTP + atrNow * 0.3
+                    : activeTP - atrNow * 0.3;
 
-                if (!(tpDistance > 0)) continue;
-
-                // Khi động lượng yếu: thu hẹp TP về gần giá hiện tại.
-                // Khi động lượng mạnh: tiếp tục nâng TP theo ATR.
-                const stepSize = (
-                    positionIsLong
-                        ? (
-                            marketPrice < tpState.peakPrice - atrNow * 0.25 ||
-                            (
-                                Number(candles[candles.length - 2]?.[4]) <
-                                Number(candles[candles.length - 3]?.[4]) &&
-                                Number(candles[candles.length - 3]?.[4]) <
-                                Number(candles[candles.length - 4]?.[4])
-                            )
-                        )
-                        : (
-                            marketPrice > tpState.peakPrice + atrNow * 0.25 ||
-                            (
-                                Number(candles[candles.length - 2]?.[4]) >
-                                Number(candles[candles.length - 3]?.[4]) &&
-                                Number(candles[candles.length - 3]?.[4]) >
-                                Number(candles[candles.length - 4]?.[4])
-                            )
-                        )
-                )
-                    ? Math.min(atrNow * 0.10, tpDistance * 0.25)
-                    : Math.min(atrNow * trailFactor, tpDistance * 0.25);
-
-                if (!(stepSize > 0)) continue;
-
-                const dynamicTP = (
-                    positionIsLong
-                        ? (
-                            marketPrice < tpState.peakPrice - atrNow * 0.25 ||
-                            (
-                                Number(candles[candles.length - 2]?.[4]) <
-                                Number(candles[candles.length - 3]?.[4]) &&
-                                Number(candles[candles.length - 3]?.[4]) <
-                                Number(candles[candles.length - 4]?.[4])
-                            )
-                        )
-                        : (
-                            marketPrice > tpState.peakPrice + atrNow * 0.25 ||
-                            (
-                                Number(candles[candles.length - 2]?.[4]) >
-                                Number(candles[candles.length - 3]?.[4]) &&
-                                Number(candles[candles.length - 3]?.[4]) >
-                                Number(candles[candles.length - 4]?.[4])
-                            )
-                        )
-                )
-                    ? (
-                        positionIsLong
-                            ? Math.min(activeTP, marketPrice + stepSize)
-                            : Math.max(activeTP, marketPrice - stepSize)
-                    )
-                    : (
-                        positionIsLong
-                            ? activeTP + stepSize
-                            : activeTP - stepSize
-                    );
-
-                // Chỉ amend khi TP vẫn nằm đúng phía có thể kích hoạt.
-                // Động lượng yếu cho phép đưa TP gần giá hơn;
-                // động lượng mạnh chỉ dịch TP theo hướng có lợi.
                 const needAmend = positionIsLong
-                    ? (
-                        dynamicTP > marketPrice &&
-                        (
-                            dynamicTP > activeTP ||
-                            (
-                                (
-                                    marketPrice < tpState.peakPrice - atrNow * 0.25 ||
-                                    (
-                                        Number(candles[candles.length - 2]?.[4]) <
-                                        Number(candles[candles.length - 3]?.[4]) &&
-                                        Number(candles[candles.length - 3]?.[4]) <
-                                        Number(candles[candles.length - 4]?.[4])
-                                    )
-                                ) &&
-                                dynamicTP < activeTP
-                            )
-                        )
-                    )
-                    : (
-                        dynamicTP < marketPrice &&
-                        (
-                            dynamicTP < activeTP ||
-                            (
-                                (
-                                    marketPrice > tpState.peakPrice + atrNow * 0.25 ||
-                                    (
-                                        Number(candles[candles.length - 2]?.[4]) >
-                                        Number(candles[candles.length - 3]?.[4]) &&
-                                        Number(candles[candles.length - 3]?.[4]) >
-                                        Number(candles[candles.length - 4]?.[4])
-                                    )
-                                ) &&
-                                dynamicTP > activeTP
-                            )
-                        )
-                    );
+                    ? dynamicTP > activeTP && dynamicTP > marketPrice
+                    : dynamicTP < activeTP && dynamicTP < marketPrice;
 
                 if (!needAmend) {
                     console.log(
@@ -2756,7 +2610,7 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
 
                 console.log(
                     `🔄 ĐANG AMEND TP ${p.instId} ${posSide}: ` +
-                    `${activeTP} → ${dynamicTP} | ROI=${pnlPct.toFixed(2)}%`
+                    `${activeTP} → ${dynamicTP}`
                 );
 
                 const amendRes = await okxApiRequest('/trade/amend-algos', 'POST', {
@@ -2802,7 +2656,7 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
             }
         }
     } catch (e) {
-        console.error('❌ TP SYNC EXCEPTION:', e.message);
+        console.error('❌ TP ENGINE SYNC EXCEPTION:', e.message);
     }
 }
 
