@@ -1883,10 +1883,11 @@ if (pnlPct <= -50 && (st?.sl || st?.currentSL)) {
         continue;
     }
 }
-/* ================= ĐẢO CHIỀU: -30% + PATTERN M15 ================= */
+
+              /* ================= ĐẢO CHIỀU: -30% + PATTERN M15 ================= */
 if (true) {
 
-    if (true) {
+    if (pnlPct <= -30 && pnlPct > -50) {
 
         try {
 
@@ -2049,18 +2050,7 @@ if (true) {
 
                 /* ================= XÁC NHẬN TÍN HIỆU ================= */
 
-                if (
-                    m15Break &&
-                    h1Confirm &&
-                   (
-                      (pnlPct <= -30 && pnlPct > -50) ||
-                      (
-                          isLong
-                               ? c.close < bbLower - (0.5 * bbStd)
-                               : c.close > bbUpper + (0.5 * bbStd)
-                      )
-                   )
-                   ) {
+                if (m15Break && h1Confirm) {
 
                     console.log(
                         `🔄 [ĐẢO CHIỀU] ${instId} xác nhận phá BB M15 + phá cấu trúc H1.`
@@ -2396,9 +2386,6 @@ if (true) {
     }
 }
               
-
-
-
 /* ================= TP ENGINE: AUTO SYNC + TRAILING TP FIX ================= */
 let forceSLtoOldTP = false;
     let finalTP = st.tp || st.currentTP;
@@ -2486,15 +2473,12 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
                 const activeTP = Number(tpAlgo.tpTriggerPx);
                 const pnlPct = Number(p.uplRatio) * 100;
 
-                if (!Number.isFinite(pnlPct)) {
-                    console.warn(`⚠️ TP ${p.instId}: uplRatio không hợp lệ`, p.uplRatio);
-                    continue;
-                }
-
-                if (pnlPct < 10) {
-                    console.log(
-                        `⏸️ TP ${p.instId}: ROI ${pnlPct.toFixed(2)}% < 10%`
-                    );
+                if (
+                    !Number.isFinite(activeTP) ||
+                    !(activeTP > 0) ||
+                    !Number.isFinite(pnlPct)
+                ) {
+                    console.warn(`⚠️ TP ${p.instId}: TP hoặc ROI không hợp lệ`);
                     continue;
                 }
 
@@ -2576,6 +2560,25 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
                     tpState.peakPrice = marketPrice;
                 }
 
+                const progress =
+                    positionIsLong
+                        ? (marketPrice - entryPrice) / (activeTP - entryPrice) * 100
+                        : (entryPrice - marketPrice) / (entryPrice - activeTP) * 100;
+
+                if (
+                    !Number.isFinite(progress) ||
+                    progress < 80 ||
+                    (positionIsLong
+                        ? !(activeTP > entryPrice)
+                        : !(activeTP < entryPrice))
+                ) {
+                    console.log(
+                        `⏸️ TP ${p.instId} ${posSide}: chưa đạt 80% Entry → TP | ` +
+                        `Tiến độ=${Number.isFinite(progress) ? progress.toFixed(2) : 'N/A'}%`
+                    );
+                    continue;
+                }
+
                 // Chỉ nâng TP khi giá tiếp tục đi thuận chiều ít nhất 0,3 ATR
                 const peakAdvance = positionIsLong
                     ? tpState.peakPrice - tpState.lastAmendPeak
@@ -2590,9 +2593,35 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
                     continue;
                 }
 
-                const dynamicTP = positionIsLong
+                let dynamicTP = positionIsLong
                     ? activeTP + atrNow * 0.3
                     : activeTP - atrNow * 0.3;
+
+                const bb = positionIsLong
+                    ? Number(st.upperBB)
+                    : Number(st.lowerBB);
+
+                if (
+                    Number.isFinite(bb) &&
+                    bb > 0 &&
+                    (positionIsLong
+                        ? marketPrice > bb
+                        : marketPrice < bb)
+                ) {
+                    dynamicTP = positionIsLong
+                        ? activeTP + atrNow * 0.15
+                        : activeTP - atrNow * 0.15;
+                } else if (
+                    Number.isFinite(bb) &&
+                    bb > 0 &&
+                    (positionIsLong
+                        ? bb > activeTP && dynamicTP > bb
+                        : bb < activeTP && dynamicTP < bb)
+                ) {
+                    dynamicTP = positionIsLong
+                        ? activeTP + (bb - activeTP) * 0.5
+                        : activeTP - (activeTP - bb) * 0.5;
+                }
 
                 const needAmend = positionIsLong
                     ? dynamicTP > activeTP && dynamicTP > marketPrice
@@ -2607,6 +2636,51 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
                 }
 
                 if (Date.now() - tpState.lastAmend < 5000) continue;
+
+                const verifyPositionsRes = await okxApiRequest(
+                    '/account/positions?instType=SWAP',
+                    'GET'
+                );
+
+                const verifyAlgosRes = await Promise.all([
+                    okxApiRequest(
+                        '/trade/orders-algo-pending?ordType=conditional&instType=SWAP&limit=100',
+                        'GET'
+                    ),
+                    okxApiRequest(
+                        '/trade/orders-algo-pending?ordType=oco&instType=SWAP&limit=100',
+                        'GET'
+                    )
+                ]);
+
+                if (
+                    verifyPositionsRes?.code !== '0' ||
+                    verifyAlgosRes[0]?.code !== '0' ||
+                    verifyAlgosRes[1]?.code !== '0'
+                ) {
+                    console.warn(`⚠️ TP ${p.instId}: không xác minh được vị thế/TP Algo trước amend`);
+                    continue;
+                }
+
+                const verifyPosition = (verifyPositionsRes.data || []).find(v =>
+                    v.instId === p.instId &&
+                    (v.posSide || 'net') === posSide &&
+                    Number(v.pos) !== 0
+                );
+
+                const verifyAlgo = [
+                    ...(verifyAlgosRes[0].data || []),
+                    ...(verifyAlgosRes[1].data || [])
+                ].find(a =>
+                    a.algoId === tpAlgo.algoId &&
+                    a.instId === p.instId &&
+                    Number(a.tpTriggerPx) > 0
+                );
+
+                if (!verifyPosition || !verifyAlgo) {
+                    console.log(`⏸️ TP ${p.instId}: vị thế hoặc TP Algo đã đóng/hết hiệu lực, bỏ amend`);
+                    continue;
+                }
 
                 console.log(
                     `🔄 ĐANG AMEND TP ${p.instId} ${posSide}: ` +
@@ -2660,63 +2734,29 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
     }
 }
 
-/* ================= END TP ENGINE ================= */
+/* ================= END TP ENGINE ================= */             
 
-
-               
-
-/* ================= 2. SL TRAILING & BUFFER (UNIFIED ENGINE) ================= */
-
+/* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
 let proposedSL = null;
 const holdTimeMins = (Date.now() - (st.ts || Date.now())) / 60000;
-const isConfirmed = holdTimeMins >= 5 || pnlPct >= 10;
+const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10;
 const atrNow = Number(st.atr) > 0 ? Number(st.atr) : Math.abs(last - entry);
 
-// 1. CẬP NHẬT ĐỈNH GIÁ CHUẨN XÁC
+// 1. CẬP NHẬT ĐỈNH GIÁ
 if (!st.peakPrice) st.peakPrice = last;
 if (isLong ? last > st.peakPrice : last < st.peakPrice)
     st.peakPrice = last;
 
 const peakPrice = st.peakPrice;
 const dropFromPeak =
-    (isLong ? peakPrice - last : last - peakPrice) / peakPrice * 100 * leverage;
+    (isLong ? peakPrice - last : last - peakPrice) / peakPrice * 100;
 
 const peakPnlPct =
     (isLong ? peakPrice - entry : entry - peakPrice) / entry * 100 * leverage;
 
-// 2. GAP ĐỘNG THEO PNL ĐỈNH
-let dropTrigger =
-    peakPnlPct >= 200 ? 3 :
-    peakPnlPct >= 150 ? 3.5 :
-    peakPnlPct >= 120 ? 4 :
-    peakPnlPct >= 100 ? 5 :
-    peakPnlPct >= 80 ? 6 :
-    peakPnlPct >= 60 ? 7 :
-    peakPnlPct >= 40 ? 9 :
-    peakPnlPct >= 30 ? 11 :
-    15;
-
-// 3. GAP THEO BOLLINGER BANDS
+// 2. GAP THEO BIẾN ĐỘNG GIÁ — ƯU TIÊN GIỮ LỆNH QUA NHỊP HỒI
 const bb = isLong ? Number(st.upperBB) : Number(st.lowerBB);
 
-if (
-    Number.isFinite(bb) &&
-    bb > 0 &&
-    (isLong ? peakPrice > bb : peakPrice < bb)
-) {
-    const bbDist = Math.abs(peakPrice - bb) / bb * 100;
-
-    const bbDrop =
-        bbDist >= 3 ? 2.5 :
-        bbDist >= 2 ? 3.5 :
-        bbDist >= 1 ? 5 :
-        bbDist >= 0.5 ? 7 :
-        15;
-
-    dropTrigger = Math.min(dropTrigger, bbDrop);
-}
-
-// 4. NHẬN DIỆN ĐỘNG LƯỢNG SUY YẾU & KỊT SỨC
 const p1 = st.tpBuffer?.[st.tpBuffer.length - 1] || last;
 const p2 = st.tpBuffer?.[st.tpBuffer.length - 2] || last;
 
@@ -2729,8 +2769,7 @@ const pullbackPct =
         ? (peakPrice - last) / peakPrice
         : (last - peakPrice) / peakPrice) * 100;
 
-const meaningfulPullback = awayFromPeak && pullbackPct >= 0.8;
-
+const meaningfulPullback = awayFromPeak && pullbackPct >= 1;
 const momentumWeak = isLong ? p1 < p2 : p1 > p2;
 
 const volumeWeak =
@@ -2746,40 +2785,71 @@ const moneyExhaustion =
 
 const isBlackSwanExit =
     st.isSpecial &&
-    pnlPct >= 25 &&
+    pnlPct > 0 &&
     awayFromPeak &&
     meaningfulPullback &&
     moneyExhaustion;
 
-// 5. TRAILING SL DUY NHẤT (TỐI ƯU ĐÒN BẨY CAO & NÉ RÂU)
+// 3. TRAILING SL THEO ATR + PNL + BOLLINGER
 if (forceSLtoOldTP && Number(st.tp) > 0) {
     proposedSL = Number(st.tp);
-} else if (pnlPct >= 10 && isConfirmed) {
-    let atrMultiplier =
-        pnlPct >= 50 ? 0.8 :
-        pnlPct >= 25 ? 1.2 :
-        pnlPct >= 15 ? 1.5 :
-        2.0;
+} else if (pnlPct >= 10 && isConfirmed && atrNow > 0 && last > 0) {
 
-    // Siết gap khi rút từ đỉnh hoặc kiệt sức dòng tiền
-    if ((dropFromPeak >= dropTrigger && awayFromPeak) || isBlackSwanExit) {
-        atrMultiplier = Math.min(atrMultiplier, 0.5);
+    // GAP nền rộng hơn khi PNL thấp; siết dần khi lợi nhuận đỉnh tăng
+    let atrMultiplier =
+    peakPnlPct >= 400 ? 0.8 :
+    peakPnlPct >= 300 ? 1.0 :
+    peakPnlPct >= 200 ? 1.2 :
+    peakPnlPct >= 100 ? 1.5 :
+    peakPnlPct >= 60  ? 1.75 :
+    peakPnlPct >= 30  ? 2.0 :
+    2.0;
+
+    // Chỉ siết thêm khi giá hồi khỏi đỉnh và động lượng suy yếu xác nhận
+    if (meaningfulPullback && moneyExhaustion) {
+        atrMultiplier = Math.min(atrMultiplier, 1.25);
     }
 
+    // Bollinger chỉ siết khi giá đã vượt dải và đang hồi khỏi đỉnh
+    if (
+        Number.isFinite(bb) &&
+        bb > 0 &&
+        (isLong ? peakPrice > bb : peakPrice < bb) &&
+        awayFromPeak &&
+        meaningfulPullback &&
+        moneyExhaustion
+    ) {
+        atrMultiplier = Math.min(atrMultiplier, 1.25);
+    }
+
+    // Tính SL theo khoảng đệm ATR
     proposedSL = isLong
         ? last - atrNow * atrMultiplier
         : last + atrNow * atrMultiplier;
 
-    // Bảo toàn lợi nhuận khi đã đạt PNL >= 15%
-    if (pnlPct >= 15) {
-        const lockSL = entry * (1 + (isLong ? 0.0025 : -0.0025));
+    // Khi PNL đỉnh tăng, khóa dần lợi nhuận nhưng giữ khoảng đệm ATR
+    if (peakPnlPct >= 30) {
         proposedSL = isLong
-            ? Math.max(proposedSL, lockSL)
-            : Math.min(proposedSL, lockSL);
+            ? Math.max(proposedSL, peakPrice - atrNow * 1.5)
+            : Math.min(proposedSL, peakPrice + atrNow * 1.5);
+    }
+
+    // Bảo toàn lợi nhuận khi PNL hiện tại đạt ít nhất 15%
+    if (pnlPct >= 15) {
+        proposedSL = isLong
+            ? Math.max(proposedSL, entry * 1.001)
+            : Math.min(proposedSL, entry * 0.999);
+    }
+
+    // Kiệt sức dòng tiền: siết vừa phải, không đóng lệnh chỉ vì một tín hiệu
+    if (isBlackSwanExit) {
+        proposedSL = isLong
+            ? Math.max(proposedSL, last - atrNow * 1.0)
+            : Math.min(proposedSL, last + atrNow * 1.0);
     }
 }
 
-// 6. CHỈ SIẾT SL THEO HƯỚNG CÓ LỢI (CHỐNG LÙI TUYỆT ĐỐI)
+// 4. CHỈ SIẾT SL THEO HƯỚNG CÓ LỢI
 if (Number.isFinite(proposedSL) && proposedSL > 0) {
     const currentSL = Number(st.currentSL) || 0;
 
@@ -2790,6 +2860,36 @@ if (Number.isFinite(proposedSL) && proposedSL > 0) {
         proposedSL = Math.min(proposedSL, currentSL);
 }
 
+/* ================= 3. ĐẢM BẢO SL CHỈ TIẾN KHÔNG LÙI (FIXED) ================= */
+if (proposedSL !== null) {
+    let canUpdateSL = false;
+    const currentSLVal = +st.currentSL || 0;
+    
+    // Đảm bảo SL mới phải tốt hơn SL cũ (tiến lên với Long, lùi xuống với Short)
+    if (isLong) {
+        if (proposedSL > currentSLVal) canUpdateSL = true;
+    } else {
+        const currentSLValShort = (st.currentSL === 0 || !st.currentSL) ? Infinity : +st.currentSL;
+        if (proposedSL < currentSLValShort) canUpdateSL = true;
+    }
+
+    if (canUpdateSL && !st.slBuffer.includes(proposedSL)) {
+        st.slBuffer.push(proposedSL);
+        if (st.slBuffer.length > 120) st.slBuffer.shift();
+    }
+}
+
+let bestSL = st.slBuffer.length > 0 
+    ? (isLong ? Math.max(...st.slBuffer) : Math.min(...st.slBuffer))
+    : (st.sl || st.currentSL);
+
+// Luôn so sánh với SL gốc để không bao giờ vi phạm điểm cắt lỗ ban đầu
+if (st.sl) {
+    bestSL = isLong ? Math.max(bestSL, +st.sl) : Math.min(bestSL, +st.sl);
+}
+
+let finalSL = bestSL;
+              
                 /* ================= 4. GỬI LỆNH AMEND SL (TRAILING THẬT) ================= */
 if (finalSL && st.slAlgoId) {
 
