@@ -1445,11 +1445,7 @@ async function masterFlow(qualityCandidates) {
 
     // Lấy danh sách ID các lệnh đang giữ vị thế
     const openPositions = (posRes.data || []).filter(p => Math.abs(+p.pos) > 0);
-    let openIds = new Set(
-        openPositions
-            .filter(p => !positionsData[p.instId]?.isReversal)
-            .map(p => p.instId)
-    );
+    let openIds = new Set(openPositions.map(p => p.instId));
 
     if (false) {
     /* ===============================
@@ -1499,98 +1495,57 @@ async function masterFlow(qualityCandidates) {
     if (openIds.size >= MAX_POSITIONS) return;
 
     /* =======================================================
- * 1.3. GẮN LẠI TP/SL (PROTECT) - CHẠY 24/24
- * ======================================================= */
-try {
-    const algoRes = await okxApiRequest('/trade/orders-algo-pending?instType=SWAP&ordType=oco&limit=100');
-    const pendingAlgos = Array.isArray(algoRes?.data) ? algoRes.data : [];
-    const algoByInst = {};
-
-    for (const a of pendingAlgos) {
+     * 1.3. GẮN LẠI TP/SL (PROTECT) - CHẠY 24/24
+     * ======================================================= */
+    try {
+      const algoRes = await okxApiRequest('/trade/orders-algo-pending?instType=SWAP&ordType=oco&limit=100');
+      const pendingAlgos = Array.isArray(algoRes?.data) ? algoRes.data : [];
+      const algoByInst = {};
+      for (const a of pendingAlgos) {
         if (!algoByInst[a.instId]) algoByInst[a.instId] = [];
         algoByInst[a.instId].push(a);
-    }
+      }
 
-    for (const p of openPositions) {
+      for (const p of openPositions) {
         const instId = p.instId;
-        const st = (typeof activeOrders !== 'undefined')
-            ? activeOrders[instId]
-            : null;
-
+        const st = (typeof activeOrders !== 'undefined') ? activeOrders[instId] : null;
         if (!st || st.protected) continue;
         if (Date.now() - (st.lastTrail || 0) < 10000) continue;
 
         const algos = algoByInst[instId] || [];
-
-        const hasSL = algos.some(a => Number(a.slTriggerPx) > 0);
-        const hasTP = algos.some(a => Number(a.tpTriggerPx) > 0);
-
-        // Có TP nhưng không có SL: bỏ qua và đánh dấu đã bảo vệ
-        if (hasTP && !hasSL) {
-            st.protected = true;
-            continue;
+        if (algos.some(a => a.tpTriggerPx || a.slTriggerPx)) {
+          st.protected = true;
+          continue;
         }
 
-        // Đã có cả TP và SL: bỏ qua và đánh dấu đã bảo vệ
-        if (hasTP && hasSL) {
-            st.protected = true;
-            continue;
-        }
-
-        // Các trường hợp còn lại: tiếp tục xử lý gắn lại TP/SL
-        const infoRes = await okxPublic(
-            `/public/instruments?instType=SWAP&instId=${instId}`
-        );
+        const infoRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${instId}`);
         const info = infoRes?.data?.[0];
-
         if (info) {
             const tickSz = parseFloat(info.tickSz || 0.00000001);
-            const pPrec = info.tickSz.includes('.')
-                ? info.tickSz.split('.')[1].length
-                : 0;
+            const pPrec = info.tickSz.includes('.') ? info.tickSz.split('.')[1].length : 0;
+            
+            const tpStr = (Math.round(st.tp / tickSz) * tickSz).toFixed(pPrec);
+            const slStr = (Math.round(st.sl / tickSz) * tickSz).toFixed(pPrec);
 
-            const tpStr = (
-                Math.round(st.tp / tickSz) * tickSz
-            ).toFixed(pPrec);
-
-            const slStr = (
-                Math.round(st.sl / tickSz) * tickSz
-            ).toFixed(pPrec);
-
-            const posSide =
-                p.posSide === 'long' || p.posSide === 'short'
-                    ? p.posSide
-                    : (+p.pos > 0 ? 'long' : 'short');
-
+            const posSide = p.posSide === 'long' || p.posSide === 'short' ? p.posSide : (+p.pos > 0 ? 'long' : 'short');
             const side = posSide === 'long' ? 'sell' : 'buy';
 
             const res = await okxApiRequest('/trade/order-algo', 'POST', {
-                instId,
-                tdMode: 'cross',
-                side,
-                posSide,
-                ordType: 'oco',
-                sz: Math.abs(+p.pos).toString(),
-                tpTriggerPx: tpStr,
-                tpOrdPx: '-1',
-                slTriggerPx: slStr,
-                slOrdPx: '-1'
+              instId, tdMode: 'cross', side, posSide, ordType: 'oco',
+              sz: Math.abs(+p.pos).toString(),
+              tpTriggerPx: tpStr, tpOrdPx: '-1',
+              slTriggerPx: slStr, slOrdPx: '-1'
             });
 
-            if (res?.code === '0' && res?.data?.[0]?.sCode === '0') {
-                st.protected = true;
-                console.log(`🛡️ Gắn lại TP/SL cho ${instId} thành công.`);
-            } else {
-                console.error(
-                    `❌ Không thể gắn lại TP/SL cho ${instId}:`,
-                    res
-                );
+            if (res?.code === '0') {
+              st.protected = true;
+              console.log(`🛡️ Gắn lại TP/SL cho ${instId} thành công.`);
             }
         }
+      }
+    } catch (e) {
+      console.error('❌ Protect Error:', e);
     }
-} catch (e) {
-    console.error('❌ Protect Error:', e);
-}
 
     /* ===============================
      * 2. CHỐT VỐN TỪ UI & KIỂM TRA RỦI RO
@@ -1659,35 +1614,30 @@ for (const p of selectedPool) {
     // GIỮ NGUYÊN toàn bộ code đặt lệnh bên dưới
 
    /* ===============================
-* 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT (GUARANTEED ENTRY FIX)
-* =============================== */
+ * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT (GUARANTEED ENTRY FIX)
+ * =============================== */
 
-// 🟢 FIX ĐIỂM NGHẼN: Cập nhật lại openIds thực tế từ OKX trước khi lặp (Tránh bị kẹt ID lệnh cũ)
-// Giả định biến openPositions chứa danh sách vị thế thực tế từ Bước 1
+// Cập nhật lại openIds thực tế trước khi lặp
 if (typeof openPositions !== 'undefined') {
     openIds = new Set(openPositions.map(p => p.instId));
 }
 
-for (const p of pool) {
-    // 1. Kiểm tra giới hạn số lượng vị thế đang mở thực tế
+for (const p of selectedPool) {
+    // 1. Kiểm tra giới hạn số lượng vị thế đang mở
     if (openIds.size >= MAX_POSITIONS) {
         log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
         break;
     }
     
     if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
-    
-    // 2. Bỏ qua nếu mã này ĐANG MỞ VỊ THẾ THỰC TẾ trên OKX
     if (openIds.has(p.instId)) continue;
 
     const now = Date.now();
 
     try {
-        // FIX LỖI 1: Chuẩn hóa side về chữ thường ('buy' hoặc 'sell')
         const sideLower = String(p.side).toLowerCase();
         if (sideLower !== 'buy' && sideLower !== 'sell') continue;
 
-        // Xác định posSide chính xác 100% không lo lỗi hoa/thường
         const posSide = sideLower === 'buy' ? 'long' : 'short';
 
         const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${p.instId}`);
@@ -1705,15 +1655,23 @@ for (const p of pool) {
         let uiLeverage = parseInt(document.getElementById('leverage')?.value || 50);
         if (isNaN(uiLeverage) || uiLeverage < 1) uiLeverage = 50;
 
+        // TÍNH SỐ LƯỢNG (QTY) THEO ĐÒN BẨY GỐC UI (Đảm bảo giá trị vị thế mong muốn)
+        const rawTargetQty = (fixedMarginPerOrder * uiLeverage) / (p.last * ctVal);
+        let targetQty = Math.floor(rawTargetQty / lotSz) * lotSz;
+
+        // Nếu khối lượng < minSz, tự động đưa về minSz để không bỏ lỡ lệnh
+        if (targetQty < minSz) {
+            targetQty = minSz;
+        }
+
         const allLeverages = [100, 75, 50, 30, 20, 10, 5, 3, 2, 1];
         const levStepList = [uiLeverage, ...allLeverages]
             .filter((v, i, a) => a.indexOf(v) === i && v <= Math.max(uiLeverage, 100))
             .sort((a, b) => b - a);
 
         let selectedLeverage = null;
-        let selectedQty = 0;
 
-        // 1. DÒ LEVERAGE: Ưu tiên cao -> Hạ dần
+        // DÒ ĐÒN BẨY CAO NHẤT SÀN CHO PHÉP
         for (const lev of levStepList) {
             const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
                 instId: p.instId,
@@ -1723,19 +1681,8 @@ for (const p of pool) {
             });
 
             if (levRes?.code === '0' || levRes?.code === '32115') {
-                const rawQty = (fixedMarginPerOrder * lev) / (p.last * ctVal);
-                const calculatedQty = Math.floor(rawQty / lotSz) * lotSz;
-
-                if (calculatedQty >= minSz) {
-                    selectedLeverage = lev;
-                    selectedQty = calculatedQty;
-                    break;
-                }
-
-                if (!selectedLeverage) {
-                    selectedLeverage = lev;
-                    selectedQty = calculatedQty;
-                }
+                selectedLeverage = lev;
+                break;
             }
         }
 
@@ -1744,38 +1691,43 @@ for (const p of pool) {
             continue;
         }
 
-        // 2. NẾU CHƯA ĐẠT MIN_SZ → BỎ QUA
-        if (selectedQty < minSz) {
-            log(`⚠️ BỎ QUA ${p.instId}: Vốn $${fixedMarginPerOrder} với Lev ${selectedLeverage}x không đủ đạt minSz (${minSz} hợp đồng).`);
-            continue;
-        }
-
-        // 3. TÍNH KÝ QUỸ THỰC TẾ
-        const actualMargin = (selectedQty * p.last * ctVal) / selectedLeverage;
-
-        const finalQty = qPrec > 0 ? selectedQty.toFixed(qPrec) : String(Math.round(selectedQty));
+        // TÍNH KÝ QUỸ THỰC TẾ DỰA TRÊN ĐÒN BẨY ĐÃ SETUP CỦA SÀN
+        const actualMargin = (targetQty * p.last * ctVal) / selectedLeverage;
+        const finalQty = qPrec > 0 ? targetQty.toFixed(qPrec) : String(Math.round(targetQty));
         if (!finalQty || parseFloat(finalQty) <= 0) continue;
 
-        log(`Coin: ${p.instId} | Side: ${sideLower.toUpperCase()} (${posSide.toUpperCase()}) | Leverage: ${selectedLeverage}x | Qty: ${finalQty} | Target Margin: $${fixedMarginPerOrder} | Actual Margin: $${actualMargin.toFixed(4)}`);
+        log(`Coin: ${p.instId} | Side: ${sideLower.toUpperCase()} (${posSide.toUpperCase()}) | Leverage: ${selectedLeverage}x | Qty: ${finalQty} | Actual Margin: $${actualMargin.toFixed(4)}`);
 
         const tpStr = (Math.round(p.tp / tickSz) * tickSz).toFixed(pPrec);
         const slStr = (Math.round(p.sl / tickSz) * tickSz).toFixed(pPrec);
 
-        // 4. BẮT ĐẦU ĐẶT LỆNH MARKET
+        // BƯỚC 1: ĐẶT LỆNH MARKET TRƯỚC
         const res = await okxApiRequest('/trade/order', 'POST', {
             instId: p.instId,
             tdMode: 'cross',
             side: sideLower,
             posSide: posSide,
             ordType: 'market',
-            sz: finalQty,
-            attachAlgoOrds: [
-                { algoOrdType: 'take_profit', tpTriggerPx: tpStr, tpOrdPx: '-1' },
-                { algoOrdType: 'stop_loss', slTriggerPx: slStr, slOrdPx: '-1' }
-            ]
+            sz: finalQty
         });
 
+        // BƯỚC 2: NẾU THÀNH CÔNG THÌ TÁCH GỬI LỆNH ALGO ĐẶT TP/SL (OCO)
         if (res?.code === '0') {
+            const closeSide = sideLower === 'buy' ? 'sell' : 'buy';
+            
+            await okxApiRequest('/trade/order-algo', 'POST', {
+                instId: p.instId,
+                tdMode: 'cross',
+                side: closeSide,
+                posSide: posSide,
+                ordType: 'oco',
+                sz: finalQty,
+                tpTriggerPx: tpStr, 
+                tpOrdPx: '-1',
+                slTriggerPx: slStr, 
+                slOrdPx: '-1'
+            });
+
             if (typeof activeOrders !== 'undefined') {
                 activeOrders[p.instId] = {
                     instId: p.instId,
@@ -1791,7 +1743,7 @@ for (const p of pool) {
                 };
             }
 
-            log(`✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | Case: ${p.tradeCase} | Entry: ${p.last} | Lev: ${selectedLeverage}x | TP/SL: OK`);
+            log(`✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | Case: ${p.tradeCase || 'Normal'} | Entry: ${p.last} | Lev: ${selectedLeverage}x | TP/SL: OK`);
 
             const msg = `🚀 SUPPER BOT TÂN VÀO LỆNH THÀNH CÔNG\n` +
                         `💎 Coin: ${p.instId.replace('-USDT-SWAP','')}\n` +
@@ -1804,7 +1756,7 @@ for (const p of pool) {
 
             if (typeof sendTelegram === 'function') sendTelegram(msg);
 
-            // Cập nhật lại danh sách vị thế đang mở ngay lập tức
+            // Cập nhật lại danh sách vị thế ngay lập tức
             openIds.add(p.instId);
 
             if (typeof saveOrders === 'function') saveOrders();
@@ -2883,46 +2835,86 @@ if (st.sl) {
 }
 
 let finalSL = bestSL;
-              
-                /* ================= 4. GỬI LỆNH AMEND SL (TRAILING THẬT) ================= */
-if (finalSL && st.slAlgoId) {
 
-    const currentSL = +st.currentSL || 0;
+                
+
+
+/* ================= 4. GỬI LỆNH AMEND SL ================= */
+if (isBlackSwanExit && !st.blackSwanClosing) {
+    st.blackSwanClosing = true;
+
+    try {
+        const closeRes = await okxApiRequest('/trade/close-position', 'POST', {
+            instId: instId,
+            mgnMode: 'cross',
+            posSide: isLong ? 'long' : 'short'
+        });
+
+        if (closeRes?.code === '0') {
+            st.currentSL = Number(finalSL) || Number(st.currentSL) || 0;
+            st.lastTrail = Date.now();
+
+            if (typeof log === 'function')
+                log(`🚨 KIỆT SỨC DÒNG TIỀN — ĐÃ GỬI LỆNH ĐÓNG ${instId}`);
+            else
+                console.log(`🚨 KIỆT SỨC DÒNG TIỀN — ĐÃ GỬI LỆNH ĐÓNG ${instId}`);
+        } else {
+            st.blackSwanClosing = false;
+            const msg = closeRes?.msg || JSON.stringify(closeRes);
+            if (typeof log === 'function')
+                log(`❌ Đóng vị thế thất bại ${instId}: ${msg}`);
+            else
+                console.log(`❌ Đóng vị thế thất bại ${instId}: ${msg}`);
+        }
+    } catch (e) {
+        st.blackSwanClosing = false;
+        if (typeof log === 'function')
+            log(`❌ Đóng vị thế lỗi ${instId}: ${e.message}`);
+        else
+            console.log(`❌ Đóng vị thế lỗi ${instId}: ${e.message}`);
+    }
+} else if (Number.isFinite(Number(finalSL)) && Number(finalSL) > 0 && st.slAlgoId) {
+
+    const currentSL = Number(st.currentSL) || 0;
+    const nextSL = Number(finalSL);
 
     let needAmend = false;
 
     if (isLong) {
-        if (finalSL > currentSL) needAmend = true;
+        if (currentSL === 0 || nextSL > currentSL) needAmend = true;
     } else {
-        const cur = currentSL === 0 ? Infinity : currentSL;
-        if (finalSL < cur) needAmend = true;
+        if (currentSL === 0 || nextSL < currentSL) needAmend = true;
     }
 
-    // Anti spam + tránh lỗi 429
-    if (needAmend) {
-        if (!st.lastTrail || Date.now() - st.lastTrail > 5000) {
+    if (needAmend && (!st.lastTrail || Date.now() - st.lastTrail > 5000)) {
+        try {
+            const amendRes = await okxApiRequest('/trade/amend-algos', 'POST', {
+                instId: instId,
+                algoId: st.slAlgoId,
+                newSlTriggerPx: nextSL.toString(),
+                newSlOrdPx: "-1"
+            });
 
-            try {
-                const amendRes = await okxApiRequest('/trade/amend-algos', 'POST', {
-                    instId: instId,
-                    algoId: st.slAlgoId,          // QUAN TRỌNG
-                    newSlTriggerPx: finalSL.toString(),
-                    newSlOrdPx: "-1"
-                });
+            if (amendRes?.code === '0') {
+                st.currentSL = nextSL;
+                st.lastTrail = Date.now();
 
-                if (amendRes?.code === '0') {
-                    st.currentSL = finalSL;
-                    st.lastTrail = Date.now();
-
-                    if (typeof log === 'function') log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
-                    else console.log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
-                }
-
-            } catch (e) {
-                if (typeof log === 'function') log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
-                else console.log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
+                if (typeof log === 'function')
+                    log(`🔁 TRAILING ${instId} → SL: ${nextSL}`);
+                else
+                    console.log(`🔁 TRAILING ${instId} → SL: ${nextSL}`);
+            } else {
+                const msg = amendRes?.msg || JSON.stringify(amendRes);
+                if (typeof log === 'function')
+                    log(`❌ Amend SL thất bại ${instId}: ${msg}`);
+                else
+                    console.log(`❌ Amend SL thất bại ${instId}: ${msg}`);
             }
-
+        } catch (e) {
+            if (typeof log === 'function')
+                log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
+            else
+                console.log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
         }
     }
 }
