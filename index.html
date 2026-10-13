@@ -2235,15 +2235,20 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
         ) / entry * 100 * leverage;
 
     /* Gap bảo vệ lợi nhuận tính theo ROI, không theo % giá */
+    /* Gap bảo vệ lợi nhuận: Đỉnh càng cao, gap càng siết hẹp để khóa chặt tiền */
     const dropTrigger =
-        peakPnlPct >= 200 ? 10 :
-        peakPnlPct >= 150 ? 9 :
-        peakPnlPct >= 100 ? 8 :
-        peakPnlPct >= 80  ? 8 :
-        peakPnlPct >= 60  ? 7 :
-        peakPnlPct >= 40  ? 7 :
-        peakPnlPct >= 30  ? 6 :
-        5;
+        peakPnlPct >= 600 ? 2  : // Lãi khủng >=600%: Tụt cực hẹp 2% ROI là khóa ngay
+        peakPnlPct >= 500 ? 2.5: // Lãi >=500%: Tụt 2.5% ROI
+        peakPnlPct >= 400 ? 3  : // Lãi >=400%: Tụt 3% ROI
+        peakPnlPct >= 300 ? 3.5: // Lãi >=300%: Tụt 3.5% ROI
+        peakPnlPct >= 200 ? 4  : // Lãi >=200%: Tụt 4% ROI
+        peakPnlPct >= 150 ? 5  : // Lãi >=150%: Tụt 5% ROI
+        peakPnlPct >= 100 ? 6  : // Lãi >=100% (x2): Tụt 6% ROI
+        peakPnlPct >= 80  ? 7  : // Lãi >=80%: Tụt 7% ROI
+        peakPnlPct >= 60  ? 8  : // Lãi >=60%: Tụt 8% ROI
+        peakPnlPct >= 40  ? 9  : // Lãi >=40%: Tụt 9% ROI
+        peakPnlPct >= 30  ? 10 : // Lãi >=30%: Tụt 10% ROI
+        12;                      // Chớm biên độ đầu: Rộng nhất 12% để né nhiễu M15 hoàn toàn
 
     const bb = isLong
         ? Number(st.upperBB)
@@ -2266,9 +2271,9 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
         ? last < peakPrice
         : last > peakPrice;
 
-    /* Chỉ coi là nhịp hồi đáng kể khi đã mất ít nhất 5 điểm ROI */
+    /* Chỉ coi là nhịp hồi đáng kể khi đã mất ít nhất 8 điểm ROI */
     const meaningfulPullback =
-        dropFromPeak >= 5 &&
+        dropFromPeak >= 8 &&
         awayFromPeak;
 
     const moneyExhaustion =
