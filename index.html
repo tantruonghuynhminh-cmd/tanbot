@@ -1608,6 +1608,7 @@ for (const p of selectedPool) {
     if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
     if (openIds.has(p.instId)) continue;
    
+
 /* ===============================
  * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT
  * =============================== */
@@ -1824,8 +1825,9 @@ for (const p of selectedPool) {
     }
 
     await new Promise(r => setTimeout(r, 800));
+    } 
 }
-  } catch (e) 
+  } catch (e) {
     console.error('❌ masterFlow error:', e);
   }
 }
