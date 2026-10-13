@@ -1874,12 +1874,8 @@ if (!st?.isReversal) {
         const inTop5Pump =
             (globalThis._botTopPump || []).includes(instId);
 
-        const inTop5Dump =
-            (globalThis._botTopDump || []).includes(instId);
-
-        // LONG chỉ xét đảo SHORT ở Top 5 Pump
-        // SHORT chỉ xét đảo LONG ở Top 5 Dump
-        const top5Confirm = isLong ? inTop5Pump : inTop5Dump;
+        // Chỉ xét đảo SHORT ở Top 5 Pump
+        const top5Confirm = inTop5Pump;
 
         // Giữ khoảng PNL đảo chiều, không chồng lấn hard stop -50%
         if (top5Confirm && pnlPct <= -30 && pnlPct > -50) {
@@ -1921,13 +1917,9 @@ if (!st?.isReversal) {
                 const bbLower = bbMiddle - 2 * bbStd;
 
                 // M15 chỉ ghi nhận hỗ trợ, KHÔNG bắt buộc để đảo chiều
-                m15Break = isLong
-                    ? c.close < bbLower &&
-                      c.close < c.o &&
-                      c.close < pPrev.l
-                    : c.close > bbUpper &&
-                      c.close > c.o &&
-                      c.close > pPrev.h;
+                m15Break = c.close > bbUpper &&
+                    c.close > c.o &&
+                    c.close > pPrev.h;
             }
 
             /* ================= XÁC NHẬN BOLLINGER H1 (CHÍNH) ================= */
@@ -1964,16 +1956,11 @@ if (!st?.isReversal) {
 
                 // Khoảng cách tương đối vượt biên, dùng để ghi log
                 h1OverBB = h1Std > 0
-                    ? isLong
-                        ? (h1Close - h1Upper) / h1Std
-                        : (h1Lower - h1Close) / h1Std
+                    ? (h1Close - h1Upper) / h1Std
                     : 0;
 
-                // LONG: H1 đóng trên BB trên → xét đảo SHORT
-                // SHORT: H1 đóng dưới BB dưới → xét đảo LONG
-                h1Confirm = isLong
-                    ? h1Close > h1Upper
-                    : h1Close < h1Lower;
+                // SHORT: H1 đóng trên BB trên → xét đảo SHORT
+                h1Confirm = h1Close > h1Upper;
             }
 
             /* ================= GIỚI HẠN 2 VỊ THẾ ĐẢO CHIỀU ================= */
@@ -1987,7 +1974,7 @@ if (!st?.isReversal) {
                 reversalCount < 2
             ) {
                 console.log(
-                    `🔄 [ĐẢO CHIỀU] ${instId} | Top 5 ${isLong ? 'Pump' : 'Dump'} | ` +
+                    `🔄 [ĐẢO CHIỀU] ${instId} | Top 5 Pump | ` +
                     `H1 vượt BB ${h1OverBB.toFixed(2)} độ lệch chuẩn | ` +
                     `M15 hỗ trợ: ${m15Break ? 'Có' : 'Không'}.`
                 );
@@ -2003,7 +1990,7 @@ if (!st?.isReversal) {
                         if (
                             algo?.algoId &&
                             (
-                                algo?.posSide === (isLong ? 'long' : 'short') ||
+                                algo?.posSide === 'long' ||
                                 !algo?.posSide
                             )
                         ) {
@@ -2037,8 +2024,8 @@ if (!st?.isReversal) {
                         {
                             instId,
                             tdMode: 'cross',
-                            side: isLong ? 'sell' : 'buy',
-                            posSide: isLong ? 'long' : 'short',
+                            side: 'sell',
+                            posSide: 'long',
                             ordType: 'market',
                             sz: oldQty.toString()
                         }
@@ -2067,8 +2054,8 @@ if (!st?.isReversal) {
                             {
                                 instId,
                                 tdMode: 'cross',
-                                side: isLong ? 'sell' : 'buy',
-                                posSide: isLong ? 'short' : 'long',
+                                side: 'sell',
+                                posSide: 'short',
                                 ordType: 'market',
                                 sz: reverseQty.toString()
                             }
@@ -2083,7 +2070,7 @@ if (!st?.isReversal) {
 
                             const reversePos = (reversePositions?.data || []).find(
                                 x =>
-                                    x?.posSide === (isLong ? 'short' : 'long') &&
+                                    x?.posSide === 'short' &&
                                     Number(x?.pos) > 0
                             );
 
@@ -2094,9 +2081,7 @@ if (!st?.isReversal) {
 
                             /* ================= 5. TP MỤC TIÊU 100% PNL ================= */
 
-                            const reverseTP = isLong
-                                ? reverseEntry * (1 - 1 / reverseLeverage)
-                                : reverseEntry * (1 + 1 / reverseLeverage);
+                            const reverseTP = reverseEntry * (1 + 1 / reverseLeverage);
 
                             // Đánh dấu vị thế đảo chiều để không bị quản lý như lệnh thường
                             st.isReversal = true;
@@ -2124,8 +2109,8 @@ if (!st?.isReversal) {
                                 {
                                     instId,
                                     tdMode: 'cross',
-                                    side: isLong ? 'buy' : 'sell',
-                                    posSide: isLong ? 'short' : 'long',
+                                    side: 'buy',
+                                    posSide: 'short',
                                     ordType: 'conditional',
                                     sz: Math.abs(Number(reversePos?.pos || reverseQty)).toString(),
                                     tpTriggerPx: reverseTP.toString(),
@@ -2155,9 +2140,9 @@ if (!st?.isReversal) {
                             const msg =
                                 `🔄 **SIÊU BOT ĐẢO CHIỀU: ${instId}**\n` +
                                 `📉 PNL lệnh cũ: ${pnlPct.toFixed(2)}%\n` +
-                                `📊 Top 5 ${isLong ? 'Pump' : 'Dump'} + H1 đóng ngoài Bollinger Bands\n` +
+                                `📊 Top 5 Pump + H1 đóng trên Bollinger Bands\n` +
                                 `📌 M15 hỗ trợ: ${m15Break ? 'Có' : 'Không'}\n` +
-                                `🔁 Đã đóng vị thế cũ và mở vị thế ngược chiều\n` +
+                                `🔁 Đã đóng vị thế cũ và mở vị thế SHORT ngược chiều\n` +
                                 `🎯 TP: ${reverseTP}\n` +
                                 `💰 Mục tiêu PNL: 100% (ước tính trước phí/trượt giá)`;
 
@@ -2168,7 +2153,7 @@ if (!st?.isReversal) {
                             continue;
                         } else {
                             console.warn(
-                                `⚠️ [ĐẢO CHIỀU] ${instId}: Đóng lệnh cũ thành công nhưng mở lệnh ngược thất bại.`
+                                `⚠️ [ĐẢO CHIỀU] ${instId}: Đóng lệnh cũ thành công nhưng mở lệnh SHORT thất bại.`
                             );
                         }
                     } else {
