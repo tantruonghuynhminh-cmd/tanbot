@@ -1653,7 +1653,7 @@ for (const p of selectedPool) {
             const allLeverages = [100, 75, 50, 30, 20, 10, 5, 3, 2, 1];
 
             const levStepList = [uiLeverage, ...allLeverages]
-                .filter((v, i, a) => a.indexOf(v) === i && v <= Math.max(uiLeverage, 100))
+                .filter((v, i, a) => a.indexOf(v) === i && v <= uiLeverage)
                 .sort((a, b) => b - a);
 
             let selectedLeverage = null;
@@ -1668,12 +1668,11 @@ for (const p of selectedPool) {
                 });
 
                 if (levRes?.code === '0' || levRes?.code === '32115') {
+                    // Tính chính xác số lượng hợp đồng dựa trực tiếp trên số vốn ký quỹ cố định mục tiêu
                     const rawQty = (fixedMarginPerOrder * lev) / (p.last * ctVal);
-                    const calculatedQty = Math.floor((rawQty + 1e-12) / lotSz) * lotSz;
+                    const calculatedQty = Math.floor(rawQty / lotSz) * lotSz;
 
-                    const testMargin = (calculatedQty * p.last * ctVal) / lev;
-
-                    if (calculatedQty >= minSz && testMargin <= fixedMarginPerOrder + 1e-8) {
+                    if (calculatedQty >= minSz) {
                         selectedLeverage = lev;
                         selectedQty = calculatedQty;
                         break;
