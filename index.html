@@ -1507,7 +1507,7 @@ async function masterFlow(qualityCandidates) {
         p => Number(p.pos) > 0 && p.posSide === 'short'
     ).length;
 
-    if (longCount >= 8 && shortCount >= 2) return;
+    if (longCount >= 7 && shortCount >= 3) return;
 
     /* =======================================================
      * 1.3. GẮN LẠI TP/SL (PROTECT) - CHẠY 24/24
@@ -1950,7 +1950,7 @@ if (pnlPct <= -50 && (st?.sl || st?.currentSL)) {
 /* ================= ĐẢO CHIỀU: -30% + PATTERN M15 ================= */
 if (true) {
 
-    if (pnlPct <= -30) {
+    if (isLong && pnlPct <= -30) {
 
         try {
 
@@ -2056,28 +2056,18 @@ if (true) {
 
                 /* ================= XÁC NHẬN PHÁ BOLL M15 ================= */
 
-                // LONG cũ: chỉ xét đảo SHORT khi nến đóng dưới BB dưới
-                // SHORT cũ: chỉ xét đảo LONG khi nến đóng trên BB trên
-
+                // LONG cũ: xét đảo SHORT khi nến M15 đóng vượt trên BB trên, nến đỏ hoặc chững lại vượt đỉnh trước
                 const m15Break =
-                    isLong
-                        ? (
-                            c.close < bbLower &&
-                            c.close < c.o &&
-                            c.close < pPrev.l
-                        )
-                        : (
-                            c.close > bbUpper &&
-                            c.close > c.o &&
-                            c.close > pPrev.h
-                        );
+                    c.close > bbUpper &&
+                    c.close > c.o &&
+                    c.close > pPrev.h;
 
 
-                /* ================= XÁC NHẬN XU HƯỚNG H1 ================= */
+                /* ================= XÁC NHẬN XU HƯỚNG H1 (VƯỢT HẲN BOLL TRÊN H1) ================= */
 
                 const h1Res =
                     await okxApiRequest(
-                        `/market/candles?instId=${instId}&bar=1H&limit=3`
+                        `/market/candles?instId=${instId}&bar=1H&limit=22`
                     );
 
                 const h1Candles =
@@ -2085,29 +2075,38 @@ if (true) {
 
                 let h1Confirm = false;
 
-                if (h1Candles.length >= 3) {
+                if (h1Candles.length >= 22) {
+
+                    const h1Closes =
+                        h1Candles.slice(1, 21).map(x => +x[4]);
+
+                    const h1BbMiddle =
+                        h1Closes.reduce((a, b) => a + b, 0) /
+                        h1Closes.length;
+
+                    const h1BbVariance =
+                        h1Closes.reduce(
+                            (a, b) => a + Math.pow(b - h1BbMiddle, 2),
+                            0
+                        ) / h1Closes.length;
+
+                    const h1BbStd =
+                        Math.sqrt(h1BbVariance);
+
+                    const h1BbUpper =
+                        h1BbMiddle + 2 * h1BbStd;
 
                     const h1 = h1Candles[1];
-                    const h1Prev = h1Candles[2];
-
-                    const h1Open = +h1[1];
-                    const h1High = +h1[2];
-                    const h1Low = +h1[3];
                     const h1Close = +h1[4];
-
+                    const h1Open = +h1[1];
+                    const h1Prev = h1Candles[2];
                     const h1PrevHigh = +h1Prev[2];
-                    const h1PrevLow = +h1Prev[3];
 
+                    // Điều kiện H1: Vừa thuận Long (xanh), vừa vượt hẳn ra ngoài dải BB trên của khung 1H
                     h1Confirm =
-                        isLong
-                            ? (
-                                h1Close < h1Open &&
-                                h1Close < h1PrevLow
-                            )
-                            : (
-                                h1Close > h1Open &&
-                                h1Close > h1PrevHigh
-                            );
+                        h1Close > h1Open &&
+                        h1Close > h1BbUpper &&
+                        h1Close > h1PrevHigh;
                 }
 
 
@@ -2116,7 +2115,7 @@ if (true) {
                 if (m15Break && h1Confirm) {
 
                     console.log(
-                        `🔄 [ĐẢO CHIỀU] ${instId} xác nhận phá BB M15 + phá cấu trúc H1.`
+                        `🔄 [ĐẢO CHIỀU] ${instId} xác nhận phá BB M15 + H1 vượt hẳn Bollinger Bands trên.`
                     );
 
 
@@ -2137,8 +2136,7 @@ if (true) {
                         if (
                             algo?.algoId &&
                             (
-                                algo?.posSide ===
-                                (isLong ? 'long' : 'short')
+                                algo?.posSide === 'long'
                                 ||
                                 !algo?.posSide
                             )
@@ -2174,8 +2172,7 @@ if (true) {
                         if (
                             algo?.algoId &&
                             (
-                                algo?.posSide ===
-                                (isLong ? 'long' : 'short')
+                                algo?.posSide === 'long'
                                 ||
                                 !algo?.posSide
                             )
@@ -2199,7 +2196,7 @@ if (true) {
 
 
                     /* =================================================
-                     * 2. ĐÓNG VỊ THẾ HIỆN TẠI
+                     * 2. ĐÓNG VỊ THẾ HIỆN TẠI (ĐÓNG LONG -> SELL)
                      * ================================================= */
 
                     const closeRes =
@@ -2209,19 +2206,9 @@ if (true) {
                             {
                                 instId,
                                 tdMode: 'cross',
-
-                                side:
-                                    isLong
-                                        ? 'sell'
-                                        : 'buy',
-
-                                posSide:
-                                    isLong
-                                        ? 'long'
-                                        : 'short',
-
+                                side: 'sell',
+                                posSide: 'long',
                                 ordType: 'market',
-
                                 sz: (
                                     typeof posQty !== 'undefined'
                                         ? posQty
@@ -2253,10 +2240,7 @@ if (true) {
 
 
                         /* =============================================
-                         * 3. MỞ VỊ THẾ NGƯỢC CHIỀU
-                         *
-                         * LONG  → SELL / SHORT
-                         * SHORT → BUY  / LONG
+                         * 3. MỞ VỊ THẾ NGƯỢC CHIỀU x2 VỐN (TỪ LONG => SHORT)
                          * ============================================= */
 
                         const reverseRes =
@@ -2266,23 +2250,11 @@ if (true) {
                                 {
                                     instId,
                                     tdMode: 'cross',
-
-                                    side:
-                                        isLong
-                                            ? 'sell'
-                                            : 'buy',
-
-                                    posSide:
-                                        isLong
-                                            ? 'short'
-                                            : 'long',
-
+                                    side: 'sell',
+                                    posSide: 'short',
                                     ordType: 'market',
-
                                     sz: (
-                                        typeof posQty !== 'undefined'
-                                            ? posQty
-                                            : st.sz
+                                      (typeof posQty !== 'undefined' ? posQty : st.sz) * 2
                                     ).toString()
                                 }
                             );
@@ -2308,12 +2280,7 @@ if (true) {
                             const reversePos =
                                 reversePositions?.data?.find(
                                     x =>
-                                        x?.posSide ===
-                                        (
-                                            isLong
-                                                ? 'short'
-                                                : 'long'
-                                        ) &&
+                                        x?.posSide === 'short' &&
                                         Number(x?.pos) > 0
                                 );
 
@@ -2325,25 +2292,19 @@ if (true) {
 
 
                             /* =========================================
-                             * 5. TP MỚI = 100% PNL
+                             * 5. TP MỚI = 100% PNL (CHO SHORT: GIÁ TP PHẢI THẤP HƠN ENTRY)
                              * ========================================= */
 
                             const reverseTP =
-                                isLong
-                                    ? reverseEntry *
-                                      (
-                                          1 -
-                                          1 / leverage
-                                      )
-                                    : reverseEntry *
-                                      (
-                                          1 +
-                                          1 / leverage
-                                      );
+                                reverseEntry *
+                                (
+                                    1 -
+                                    1 / leverage
+                                );
 
 
                             /* =========================================
-                             * 6. ĐẶT TP CHO VỊ THẾ NGƯỢC CHIỀU
+                             * 6. ĐẶT TP CHO VỊ THẾ NGƯỢC CHIỀU (SHORT -> SIDE: BUY)
                              * ========================================= */
 
                             const reverseTPRes =
@@ -2353,25 +2314,12 @@ if (true) {
                                     {
                                         instId: instId,
                                         tdMode: 'cross',
-
-                                        side:
-                                            isLong
-                                                ? 'buy'
-                                                : 'sell',
-
-                                        posSide:
-                                            isLong
-                                                ? 'short'
-                                                : 'long',
-
+                                        side: 'buy',
+                                        posSide: 'short',
                                         ordType: 'conditional',
-
                                         sz: (
-                                            typeof posQty !== 'undefined'
-                                                ? posQty
-                                                : st.sz
+                                          (typeof posQty !== 'undefined' ? posQty : st.sz) * 2
                                         ).toString(),
-
                                         tpTriggerPx:
                                             reverseTP.toString(),
 
@@ -2403,7 +2351,9 @@ if (true) {
 
                                 st.tpBuffer =
                                     [reverseEntry];
-
+                                
+                                st.tradeCase = "Rev";
+                                st.isReversal = true;
 
                                 console.log(
                                     `🎯 [ĐẢO CHIỀU] ${instId} TP mới ${reverseTP} — mục tiêu PNL 100%.`
@@ -2413,8 +2363,8 @@ if (true) {
                                 const msg =
                                     `🔄 **SIÊU BOT ĐẢO CHIỀU: ${instId}**\n` +
                                     `📉 PNL lệnh cũ: ${pnlPct.toFixed(2)}%\n` +
-                                    `📊 M15 phá Bollinger Bands + H1 xác nhận phá cấu trúc\n` +
-                                    `🔁 Đã đóng lệnh cũ + mở vị thế ngược chiều\n` +
+                                    `📊 M15 phá BB + H1 vượt hẳn Bollinger Bands trên\n` +
+                                    `🔁 Đã đóng lệnh cũ + mở vị thế Short ngược chiều\n` +
                                     `🎯 TP mới: ${reverseTP}\n` +
                                     `💰 Mục tiêu PNL: 100%`;
 
@@ -2500,20 +2450,17 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
  *
  * BB KHÔNG CÒN QUYỀN SIẾT DROP TRIGGER
  * ======================================================= */
-/* Gap bảo vệ lợi nhuận: Đỉnh càng cao, gap càng siết hẹp để khóa chặt tiền */
+
     const dropTrigger =
-        peakPnlPct >= 600 ? 2  : // Lãi khủng >=600%: Tụt cực hẹp 2% ROI là khóa ngay
-        peakPnlPct >= 500 ? 2.5: // Lãi >=500%: Tụt 2.5% ROI
-        peakPnlPct >= 400 ? 3  : // Lãi >=400%: Tụt 3% ROI
-        peakPnlPct >= 300 ? 3.5: // Lãi >=300%: Tụt 3.5% ROI
-        peakPnlPct >= 200 ? 4  : // Lãi >=200%: Tụt 4% ROI
-        peakPnlPct >= 150 ? 5  : // Lãi >=150%: Tụt 5% ROI
-        peakPnlPct >= 100 ? 6  : // Lãi >=100% (x2): Tụt 6% ROI
-        peakPnlPct >= 80  ? 7  : // Lãi >=80%: Tụt 7% ROI
-        peakPnlPct >= 60  ? 8  : // Lãi >=60%: Tụt 8% ROI
-        peakPnlPct >= 40  ? 9  : // Lãi >=40%: Tụt 9% ROI
-        peakPnlPct >= 30  ? 10 : // Lãi >=30%: Tụt 10% ROI
-        12;                      // Chớm biên độ đầu: Rộng nhất 12% để né nhiễu M15 hoàn toàn
+        peakPnlPct >= 200 ? 3 :
+        peakPnlPct >= 150 ? 3.5 :
+        peakPnlPct >= 120 ? 4 :
+        peakPnlPct >= 100 ? 5 :
+        peakPnlPct >= 80  ? 6 :
+        peakPnlPct >= 60  ? 7 :
+        peakPnlPct >= 40  ? 9 :
+        peakPnlPct >= 30  ? 11 :
+        15;
 
 
 /* =======================================================
@@ -2675,7 +2622,7 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
         }
 
 
-/* ---------- GIAI ĐOẠN 2: TP HIỆN TẠI ĐÃ HIT ---------- */
+/* ---------- GIAI ĐOẠN 2: TP HIỆN TẠI ĐÃ GẦN TỚI ĐOẠN HIT ---------- */
 
     } else if (
         currentTP > 0 &&
@@ -2689,7 +2636,7 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
         if (isLong) {
 
             dynamicTP =
-                currentTP + atrNow * 0.5;
+                currentTP + atrNow * 0.3;
 
             if (
                 Number.isFinite(bb) &&
@@ -2955,9 +2902,13 @@ const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10;
 if (forceSLtoOldTP && st.tp) {
     proposedSL = +(st.currentTP || st.tp); 
 } 
-// 2. REVERSAL / LÃI CỰC LỚN (>= 50%): Siết cực chặt bằng ATR nhỏ hoặc bám đỉnh
-else if ((st.tradeCase?.includes("Rev") && pnlPct >= 30) || pnlPct >= 50) {
-    proposedSL = isLong ? last - (st.atr * 1.0) : last + (st.atr * 1.0); // Siết chặt 1.0 ATR
+// 2. REVERSAL / LÃI CỰC LỚN: Không tự gắn SL cho lệnh đảo chiều
+else if (
+    !st.isReversal &&
+    !st.tradeCase?.includes("Rev") &&
+    ((st.tradeCase?.includes("Rev") && pnlPct >= 30) || pnlPct >= 50)
+) {
+    proposedSL = isLong ? last - (st.atr * 1.0) : last + (st.atr * 1.0);
 }
 // 3. LÃI TRUNG BÌNH CAO (25% - 50%) && Đã xác nhận thời gian
 else if (pnlPct >= 25 && isConfirmed) { 
