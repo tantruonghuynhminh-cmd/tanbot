@@ -1601,7 +1601,7 @@ const remainingSlots = MAX_POSITIONS - openIds.size;
 if (remainingSlots <= 0) return;
 
 // Lấy trực tiếp từ pool, giới hạn số lượng tối đa là (remainingSlots - 2)
-const selectedPool = pool.slice(0, Math.max(0, remainingSlots - 2));
+const selectedPool = pool.slice(0, Math.max(0, remainingSlots - 5));
 
 for (const p of selectedPool) {
     if (openIds.size >= MAX_POSITIONS) break;
