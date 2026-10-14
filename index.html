@@ -1629,175 +1629,100 @@ for (const p of Pool) {
     const now = Date.now();
 
     try {
-        const sideLower = String(p.side).toLowerCase();
-        if (sideLower !== 'buy' && sideLower !== 'sell') continue;
+        const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${p.instId}`);
+    const info = instRes?.data?.[0];
+    if (!info) continue;
 
-        const posSide = sideLower === 'buy' ? 'long' : 'short';
+    const ctVal = parseFloat(info.ctVal);
+    const lotSz = parseFloat(info.lotSz);
+    const tickSz = parseFloat(info.tickSz);
+    const minSz = parseFloat(info.minSz || lotSz);
 
-        const instRes = await okxPublic(
-            `/public/instruments?instType=SWAP&instId=${p.instId}`
-        );
-        const info = instRes?.data?.[0];
-        if (!info) continue;
+    const qPrec = info.lotSz.includes('.') ? info.lotSz.split('.')[1].length : 0;
+    const pPrec = info.tickSz.includes('.') ? info.tickSz.split('.')[1].length : 0;
 
-        const ctVal = parseFloat(info.ctVal);
-        const lotSz = parseFloat(info.lotSz);
-        const tickSz = parseFloat(info.tickSz);
-        const minSz = parseFloat(info.minSz || info.lotSz);
+    // 3️⃣ VÒNG LẶP HẠ ĐÒN BẨY TỪ UI XUỐNG VÀ KIỂM SOÁT KÝ QUỸ KHÔNG ĐỘI VỐN
+    let currentLeverage = parseInt(document.getElementById('leverage')?.value || 50);
+    if (isNaN(currentLeverage) || currentLeverage < 1) currentLeverage = 50;
+    
+    let finalQty = "";
+    let leverageFixed = false;
 
-        if (
-            !Number.isFinite(ctVal) || ctVal <= 0 ||
-            !Number.isFinite(lotSz) || lotSz <= 0 ||
-            !Number.isFinite(tickSz) || tickSz <= 0 ||
-            !Number.isFinite(minSz) || minSz <= 0 ||
-            !Number.isFinite(p.last) || p.last <= 0 ||
-            !Number.isFinite(fixedMarginPerOrder) ||
-            fixedMarginPerOrder <= 0
-        ) {
-            log(`⚠️ BỎ QUA ${p.instId}: Dữ liệu giá, hợp đồng hoặc vốn không hợp lệ.`);
+    while (currentLeverage >= 1) {
+        let rawQty = (fixedMarginPerOrder * currentLeverage) / (p.last * ctVal);
+        let qty = Math.floor(rawQty / lotSz) * lotSz;
+
+        // Nếu khối lượng nhỏ hơn minSz hoặc tính ra ký quỹ vượt vốn mục tiêu thì hạ đòn bẩy
+        let calcMargin = (qty * p.last * ctVal) / currentLeverage;
+        if (qty < minSz || calcMargin > fixedMarginPerOrder + 1e-8) {
+            // Hạ bậc đòn bẩy mượt mà từ UI xuống
+            if (currentLeverage > 50) currentLeverage = 50;
+            else if (currentLeverage > 30) currentLeverage = 30;
+            else if (currentLeverage > 20) currentLeverage = 20;
+            else if (currentLeverage > 10) currentLeverage = 10;
+            else if (currentLeverage > 5) currentLeverage = 5;
+            else if (currentLeverage > 3) currentLeverage = 3;
+            else if (currentLeverage > 2) currentLeverage = 2;
+            else if (currentLeverage > 1) currentLeverage = 1;
+            else break;
             continue;
         }
 
-        const qPrec = String(info.lotSz).includes('.')
-            ? String(info.lotSz).split('.')[1].length : 0;
-        const pPrec = String(info.tickSz).includes('.')
-            ? String(info.tickSz).split('.')[1].length : 0;
-
-        let uiLeverage = parseInt(
-            document.getElementById('leverage')?.value || 50
-        );
-        if (isNaN(uiLeverage) || uiLeverage < 1) uiLeverage = 50;
-
-        const allLeverages = [50, 30, 20, 10, 5, 3, 2, 1];
-
-        const levStepList = [...new Set([uiLeverage, ...allLeverages])]
-            .filter(v => v >= 1 && v <= uiLeverage)
-            .sort((a, b) => b - a);
-
-        let selectedLeverage = null;
-        let selectedQty = 0;
-        let actualMargin = 0;
-
-        for (const lev of levStepList) {
-            // Tính khối lượng theo vốn ký quỹ mục tiêu và đòn bẩy hiện tại
-            const rawQty = (fixedMarginPerOrder * lev) / (p.last * ctVal);
-
-            // Làm tròn xuống theo bước hợp đồng, không làm tròn lên
-            const calculatedQty = Math.floor(
-                rawQty / lotSz + 1e-10
-            ) * lotSz;
-
-            if (
-                !Number.isFinite(calculatedQty) ||
-                calculatedQty < minSz
-            ) {
-                continue;
-            }
-
-            const calculatedMargin = (calculatedQty * p.last * ctVal) / lev;
-
-            // Không đặt lệnh nếu ký quỹ tính toán vượt ngân sách mục tiêu hoặc sai số
-            if (
-                !Number.isFinite(calculatedMargin) ||
-                calculatedMargin > fixedMarginPerOrder + 1e-8
-            ) {
-                continue;
-            }
-
-            const levRes = await okxApiRequest(
-                '/account/set-leverage',
-                'POST',
-                {
-                    instId: p.instId,
-                    lever: lev.toString(),
-                    mgnMode: 'cross',
-                    posSide: posSide
-                }
-            );
-
-            // Chỉ chấp nhận phản hồi thành công thực sự từ API
-            if (levRes?.code !== '0') continue;
-
-            selectedLeverage = lev;
-            selectedQty = calculatedQty;
-            actualMargin = calculatedMargin;
-            break;
-        }
-
-        if (!selectedLeverage) {
-            log(
-                `⚠️ BỎ QUA ${p.instId}: Không tìm được mức đòn bẩy/khối lượng ` +
-                `đạt minSz mà không vượt vốn mục tiêu $${fixedMarginPerOrder}.`
-            );
-            continue;
-        }
-
-        const finalQty = qPrec > 0
-            ? selectedQty.toFixed(qPrec)
-            : String(Math.round(selectedQty));
-
-        if (!finalQty || !Number.isFinite(Number(finalQty)) ||
-            Number(finalQty) <= 0) continue;
-
-        // Kiểm tra lại vốn sau khi định dạng khối lượng
-        actualMargin = (
-            Number(finalQty) * p.last * ctVal
-        ) / selectedLeverage;
-
-        if (actualMargin > fixedMarginPerOrder + 1e-8) {
-            log(`⚠️ BỎ QUA ${p.instId}: Ký quỹ vượt vốn mục tiêu sau làm tròn.`);
-            continue;
-        }
-
-        log(
-            `Coin: ${p.instId} | Side: ${sideLower.toUpperCase()} ` +
-            `(${posSide.toUpperCase()}) | Leverage: ${selectedLeverage}x | ` +
-            `Qty: ${finalQty} | Target Margin: $${fixedMarginPerOrder} | ` +
-            `Estimated Margin: $${actualMargin.toFixed(4)}`
-        );
-
-        const tpStr = (Math.round(p.tp / tickSz) * tickSz).toFixed(pPrec);
-        const slStr = (Math.round(p.sl / tickSz) * tickSz).toFixed(pPrec);
-
-        // Khóa coin trước khi gửi lệnh để tránh vòng quét khác vào trùng
-        openIds.add(p.instId);
-
-        const res = await okxApiRequest('/trade/order', 'POST', {
+        const levRes = await okxApiRequest('/account/set-leverage', 'POST', {
             instId: p.instId,
-            tdMode: 'cross',
-            side: sideLower,
-            posSide: posSide,
-            ordType: 'market',
-            sz: finalQty,
-            attachAlgoOrds: [
-                {
-                    algoOrdType: 'take_profit',
-                    tpTriggerPx: tpStr,
-                    tpOrdPx: '-1'
-                },
-                {
-                    algoOrdType: 'stop_loss',
-                    slTriggerPx: slStr,
-                    slOrdPx: '-1'
-                }
-            ]
+            lever: currentLeverage.toString(),
+            mgnMode: 'cross',
+            posSide: p.side === 'buy' ? 'long' : 'short'
         });
 
-        if (res?.code === '0') {
-            if (typeof activeOrders !== 'undefined') {
-                activeOrders[p.instId] = {
-                    instId: p.instId,
-                    side: sideLower.toUpperCase(),
-                    posSide: posSide,
-                    ts: now,
-                    status: 'FILLED',
-                    entry: p.last,
-                    tp: parseFloat(tpStr),
-                    sl: parseFloat(slStr),
-                    protected: true,
-                    tradeCase: p.tradeCase || 'Normal'
-                };
-            }
+        if (levRes?.code === '0' || levRes?.code === '32115') {
+            finalQty = qPrec > 0 ? qty.toFixed(qPrec) : String(Math.round(qty));
+            leverageFixed = true;
+            break; 
+        } 
+        else if (levRes?.code === '59102') {
+            if (currentLeverage > 30) currentLeverage = 30;
+            else if (currentLeverage > 20) currentLeverage = 20;
+            else if (currentLeverage > 10) currentLeverage = 10;
+            else if (currentLeverage > 5) currentLeverage = 5;
+            else if (currentLeverage > 3) currentLeverage = 3;
+            else if (currentLeverage > 2) currentLeverage = 2;
+            else if (currentLeverage > 1) currentLeverage = 1;
+            else break;
+        } 
+        else {
+            break;
+        }
+    }
+
+    if (!leverageFixed || !finalQty) continue;
+
+    const tpStr = (Math.round(p.tp / tickSz) * tickSz).toFixed(pPrec);
+    const slStr = (Math.round(p.sl / tickSz) * tickSz).toFixed(pPrec);
+
+    const res = await okxApiRequest('/trade/order', 'POST', {
+        instId: p.instId,
+        tdMode: 'cross',
+        side: p.side,
+        posSide: p.side === 'buy' ? 'long' : 'short',
+        ordType: 'market',
+        sz: finalQty,
+        attachAlgoOrds: [
+            { algoOrdType: 'take_profit', tpTriggerPx: tpStr, tpOrdPx: '-1' },
+            { algoOrdType: 'stop_loss', slTriggerPx: slStr, slOrdPx: '-1' }
+        ]
+    });
+
+    if (res?.code === '0') {
+        if (typeof activeOrders !== 'undefined') {
+            activeOrders[p.instId] = {
+                instId: p.instId, side: p.side, ts: now, status: 'FILLED',
+                entry: p.last, tp: parseFloat(tpStr), sl: parseFloat(slStr),
+                tpBuffer: [parseFloat(tpStr), parseFloat(tpStr)], slBuffer: [parseFloat(slStr), parseFloat(slStr)],
+                protected: true, tradeCase: p.tradeCase || "Normal"
+            };
+            localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+        }
 
             log(
                 `✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | ` +
