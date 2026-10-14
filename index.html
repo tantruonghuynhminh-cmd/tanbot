@@ -1609,12 +1609,19 @@ const pool = (qualityCandidates || [])
    /* ===============================
      * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT
      * =============================== */
-    for (const p of pool) {
-        if (openIds.size >= MAX_POSITIONS) break;
-        if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
-        if (openIds.has(p.instId)) continue;
+    if (typeof openPositions !== 'undefined') {
+    openIds = new Set(openPositions.map(p => p.instId));
+}
 
-        const now = Date.now();
+for (const p of pool) {
+    if (openIds.size >= MAX_POSITIONS) {
+        log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
+        break;
+    }
+    if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
+    if (openIds.has(p.instId)) continue;
+
+    const now = Date.now();
 
        try {
         const sideLower = String(p.side).toLowerCase();
