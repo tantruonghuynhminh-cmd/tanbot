@@ -2889,21 +2889,20 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
     finalTP = st.tp || st.currentTP;
 }
 
-              /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
+             /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
 let proposedSL = null; 
 const holdTimeMins = (Date.now() - st.ts) / 60000;
 const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10; 
 
 // 1. ƯU TIÊN CAO NHẤT: Khi TP động (Shadow TP) đã kích hoạt, khóa SL ngay theo cấu trúc đã định
-if (forceSLtoOldTP && st.tp) {
-    proposedSL = +(st.currentTP || st.tp); 
+if (st.isReversal || st.tradeCase?.includes("Rev")) {
+    proposedSL = null;
+}
+else if (forceSLtoOldTP && st.tp) {
+    proposedSL = +(st.currentTP || st.tp);
 } 
 // 2. REVERSAL / LÃI CỰC LỚN: Không tự gắn SL cho lệnh đảo chiều
-else if (
-    !st.isReversal &&
-    !st.tradeCase?.includes("Rev") &&
-    ((st.tradeCase?.includes("Rev") && pnlPct >= 30) || pnlPct >= 50)
-) {
+else if (pnlPct >= 50) {
     proposedSL = isLong ? last - (st.atr * 1.0) : last + (st.atr * 1.0);
 }
 // 3. LÃI TRUNG BÌNH CAO (25% - 50%) && Đã xác nhận thời gian
@@ -2914,20 +2913,18 @@ else if (pnlPct >= 25 && isConfirmed) {
 else if (pnlPct >= 15 && isConfirmed) {
     proposedSL = entry * (1 + (isLong ? 0.003 : -0.003)); 
 }
-// 5. GIA ĐOẠN ĐẦU (10% - 15%): Kê SL rộng hơn một chút để chống quét râu nến
+// 5. GIAI ĐOẠN ĐẦU (10% - 15%): Kê SL rộng hơn một chút để chống quét râu nến
 else if (pnlPct >= 10 && isConfirmed) {
     proposedSL = isLong ? last - (st.atr * 2.0) : last + (st.atr * 2.0); // Dùng 2.0 ATR cho thoáng
 }
 
 /* ================= 3. ĐẢM BẢO SL CHỈ TIẾN KHÔNG LÙI (FIXED) ================= */
 if (
+    !positions[instId]?.isReversal &&
+    !st.tradeCase?.includes("Rev") &&
     proposedSL !== null &&
     Number.isFinite(Number(proposedSL)) &&
-    Number(proposedSL) > 0 &&
-    (
-        !positions[instId]?.isReversal ||
-        pnlPct > 50
-    )
+    Number(proposedSL) > 0
 ) {
     let canUpdateSL = false;
     const currentSLVal = +st.currentSL || 0;
@@ -2948,12 +2945,6 @@ if (
         }
     }
 
-    // ĐẢO CHIỀU TP-ONLY:
-    // PNL <= 50% tuyệt đối không tạo / cập nhật SL
-    if (positions[instId]?.isReversal && pnlPct <= 50) {
-        canUpdateSL = false;
-    }
-
     if (canUpdateSL && !st.slBuffer.includes(proposedSL)) {
         st.slBuffer.push(proposedSL);
         if (st.slBuffer.length > 120) st.slBuffer.shift();
@@ -2965,7 +2956,7 @@ let bestSL = st.slBuffer.length > 0
     : (st.sl || st.currentSL);
 
 // Luôn so sánh với SL gốc để không bao giờ vi phạm điểm cắt lỗ ban đầu
-if (st.sl) {
+if (!positions[instId]?.isReversal && !st.tradeCase?.includes("Rev") && st.sl) {
     bestSL = isLong
         ? Math.max(bestSL, +st.sl)
         : Math.min(bestSL, +st.sl);
@@ -2974,8 +2965,8 @@ if (st.sl) {
 let finalSL = bestSL;
 
 // ĐẢO CHIỀU TP-ONLY:
-// Khi PNL <= 50% thì không được phép có SL từ engine này
-if (positions[instId]?.isReversal && pnlPct <= 50) {
+// Khi là lệnh đảo chiều thì không được phép có SL từ engine này
+if (positions[instId]?.isReversal || st.tradeCase?.includes("Rev")) {
     finalSL = null;
 }
 
