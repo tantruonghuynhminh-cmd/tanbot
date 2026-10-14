@@ -2500,17 +2500,20 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
  *
  * BB KHÔNG CÒN QUYỀN SIẾT DROP TRIGGER
  * ======================================================= */
-
+/* Gap bảo vệ lợi nhuận: Đỉnh càng cao, gap càng siết hẹp để khóa chặt tiền */
     const dropTrigger =
-        peakPnlPct >= 200 ? 3 :
-        peakPnlPct >= 150 ? 3.5 :
-        peakPnlPct >= 120 ? 4 :
-        peakPnlPct >= 100 ? 5 :
-        peakPnlPct >= 80  ? 6 :
-        peakPnlPct >= 60  ? 7 :
-        peakPnlPct >= 40  ? 9 :
-        peakPnlPct >= 30  ? 11 :
-        15;
+        peakPnlPct >= 600 ? 2  : // Lãi khủng >=600%: Tụt cực hẹp 2% ROI là khóa ngay
+        peakPnlPct >= 500 ? 2.5: // Lãi >=500%: Tụt 2.5% ROI
+        peakPnlPct >= 400 ? 3  : // Lãi >=400%: Tụt 3% ROI
+        peakPnlPct >= 300 ? 3.5: // Lãi >=300%: Tụt 3.5% ROI
+        peakPnlPct >= 200 ? 4  : // Lãi >=200%: Tụt 4% ROI
+        peakPnlPct >= 150 ? 5  : // Lãi >=150%: Tụt 5% ROI
+        peakPnlPct >= 100 ? 6  : // Lãi >=100% (x2): Tụt 6% ROI
+        peakPnlPct >= 80  ? 7  : // Lãi >=80%: Tụt 7% ROI
+        peakPnlPct >= 60  ? 8  : // Lãi >=60%: Tụt 8% ROI
+        peakPnlPct >= 40  ? 9  : // Lãi >=40%: Tụt 9% ROI
+        peakPnlPct >= 30  ? 10 : // Lãi >=30%: Tụt 10% ROI
+        12;                      // Chớm biên độ đầu: Rộng nhất 12% để né nhiễu M15 hoàn toàn
 
 
 /* =======================================================
