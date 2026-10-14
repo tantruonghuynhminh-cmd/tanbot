@@ -1610,7 +1610,6 @@ for (const p of pool) {
     if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
     if (openIds.has(p.instId)) continue;
    
-
 /* ===============================
  * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT
  * =============================== */
@@ -1618,7 +1617,7 @@ if (typeof openPositions !== 'undefined') {
     openIds = new Set(openPositions.map(p => p.instId));
 }
 
-for (const p of pool) {
+for (const p of Pool) {
     if (openIds.size >= MAX_POSITIONS) {
         log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
         break;
@@ -1669,7 +1668,7 @@ for (const p of pool) {
         );
         if (isNaN(uiLeverage) || uiLeverage < 1) uiLeverage = 50;
 
-        const allLeverages = [100, 75, 50, 30, 20, 10, 5, 3, 2, 1];
+        const allLeverages = [50, 30, 20, 10, 5, 3, 2, 1];
 
         const levStepList = [...new Set([uiLeverage, ...allLeverages])]
             .filter(v => v >= 1 && v <= uiLeverage)
@@ -1680,21 +1679,7 @@ for (const p of pool) {
         let actualMargin = 0;
 
         for (const lev of levStepList) {
-            const levRes = await okxApiRequest(
-                '/account/set-leverage',
-                'POST',
-                {
-                    instId: p.instId,
-                    lever: lev.toString(),
-                    mgnMode: 'cross',
-                    posSide: posSide
-                }
-            );
-
-            // Chỉ chấp nhận phản hồi thành công thực sự từ API
-            if (levRes?.code !== '0') continue;
-
-            // Tính khối lượng theo vốn ký quỹ mục tiêu
+            // Tính khối lượng theo vốn ký quỹ mục tiêu và đòn bẩy hiện tại
             const rawQty = (fixedMarginPerOrder * lev) / (p.last * ctVal);
 
             // Làm tròn xuống theo bước hợp đồng, không làm tròn lên
@@ -1711,13 +1696,27 @@ for (const p of pool) {
 
             const calculatedMargin = (calculatedQty * p.last * ctVal) / lev;
 
-            // Không đặt lệnh nếu ký quỹ tính toán vượt ngân sách mục tiêu
+            // Không đặt lệnh nếu ký quỹ tính toán vượt ngân sách mục tiêu hoặc sai số
             if (
                 !Number.isFinite(calculatedMargin) ||
                 calculatedMargin > fixedMarginPerOrder + 1e-8
             ) {
                 continue;
             }
+
+            const levRes = await okxApiRequest(
+                '/account/set-leverage',
+                'POST',
+                {
+                    instId: p.instId,
+                    lever: lev.toString(),
+                    mgnMode: 'cross',
+                    posSide: posSide
+                }
+            );
+
+            // Chỉ chấp nhận phản hồi thành công thực sự từ API
+            if (levRes?.code !== '0') continue;
 
             selectedLeverage = lev;
             selectedQty = calculatedQty;
