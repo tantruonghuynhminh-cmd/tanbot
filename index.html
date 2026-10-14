@@ -1699,10 +1699,13 @@ for (const p of pool) {
 
             // Làm tròn xuống theo bước hợp đồng, không làm tròn lên
             const calculatedQty = Math.floor(
-                (rawQty + Number.EPSILON * Math.max(1, rawQty)) / lotSz
+                rawQty / lotSz + 1e-10
             ) * lotSz;
 
-            if (!Number.isFinite(calculatedQty) || calculatedQty < minSz) {
+            if (
+                !Number.isFinite(calculatedQty) ||
+                calculatedQty < minSz
+            ) {
                 continue;
             }
 
