@@ -1616,7 +1616,7 @@ for (const p of pool) {
 if (typeof openPositions !== 'undefined') {
     openIds = new Set(openPositions.map(p => p.instId));
 }
-
+const Pool = typeof candidates !== 'undefined' ? candidates : [];
 for (const p of Pool) {
     if (openIds.size >= MAX_POSITIONS) {
         log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
