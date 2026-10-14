@@ -1599,8 +1599,8 @@ async function masterFlow(qualityCandidates) {
     }
 
    /* ===============================
-     * 3. POOL TÍN HIỆU (THEO DELTA THUẦN)
-     * =============================== */
+ * 3. POOL TÍN HIỆU (THEO DELTA THUẦN)
+ * =============================== */
 const pool = (qualityCandidates || [])
     .filter(p => p && p.instId)
     .sort((a, b) => Math.abs(b.delta || 0) - Math.abs(a.delta || 0));
@@ -1609,14 +1609,18 @@ for (const p of pool) {
     if (openIds.size >= MAX_POSITIONS) break;
     if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
     if (openIds.has(p.instId)) continue;
-   
+}
+
+
 /* ===============================
  * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT
  * =============================== */
 if (typeof openPositions !== 'undefined') {
     openIds = new Set(openPositions.map(p => p.instId));
 }
+
 const Pool = typeof candidates !== 'undefined' ? candidates : [];
+
 for (const p of Pool) {
     if (openIds.size >= MAX_POSITIONS) {
         log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
