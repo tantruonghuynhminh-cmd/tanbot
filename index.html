@@ -1616,10 +1616,15 @@ const pool = (qualityCandidates || [])
 
         const now = Date.now();
 
-        try {
-            const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${p.instId}`);
-    const info = instRes?.data?.[0];
-    if (!info) continue;
+       try {
+        const sideLower = String(p.side).toLowerCase();
+        if (sideLower !== 'buy' && sideLower !== 'sell') continue;
+
+        const posSide = sideLower === 'buy' ? 'long' : 'short';
+
+        const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${p.instId}`);
+        const info = instRes?.data?.[0];
+        if (!info) continue;
 
     const ctVal = parseFloat(info.ctVal);
     const lotSz = parseFloat(info.lotSz);
