@@ -1498,16 +1498,7 @@ async function masterFlow(qualityCandidates) {
      * 1.2. CẤU HÌNH GIỚI HẠN (CẦN THÌ FIX TẠI ĐÂY)
      * =============================== */
     const MAX_POSITIONS = 10;
-
-    const longCount = openPositions.filter(
-        p => Number(p.pos) > 0 && p.posSide === 'long'
-    ).length;
-
-    const shortCount = openPositions.filter(
-        p => Number(p.pos) > 0 && p.posSide === 'short'
-    ).length;
-
-    if (longCount >= 7 && shortCount >= 3) return;
+    if (openIds.size >= MAX_POSITIONS) return;
 
     /* =======================================================
      * 1.3. GẮN LẠI TP/SL (PROTECT) - CHẠY 24/24
