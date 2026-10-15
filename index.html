@@ -1697,8 +1697,20 @@ const pool = (qualityCandidates || [])
 
     if (!leverageFixed || !finalQty) continue;
 
-    const tpStr = (Math.round(p.tp / tickSz) * tickSz).toFixed(pPrec);
-    const slStr = (Math.round(p.sl / tickSz) * tickSz).toFixed(pPrec);
+    // Kiểm tra và ép biên độ an toàn cho TP và SL trước khi làm tròn
+    let safeTp = p.tp;
+    let safeSl = p.sl;
+
+    if (posSide === 'long') {
+        if (safeTp <= p.last) safeTp = p.last + (tickSz * 10); 
+        if (safeSl >= p.last) safeSl = p.last - (tickSz * 10);
+    } else {
+        if (safeTp >= p.last) safeTp = p.last - (tickSz * 10);
+        if (safeSl <= p.last) safeSl = p.last + (tickSz * 10);
+    }
+
+    const tpStr = (Math.round(safeTp / tickSz) * tickSz).toFixed(pPrec);
+    const slStr = (Math.round(safeSl / tickSz) * tickSz).toFixed(pPrec);
 
     const res = await okxApiRequest('/trade/order', 'POST', {
         instId: p.instId,
