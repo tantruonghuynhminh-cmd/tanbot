@@ -1874,10 +1874,8 @@ if (pnlPct <= -50 && (st?.sl || st?.currentSL)) {
     }
 }
 
-/* ================= ĐẢO CHIỀU: -30% + PATTERN M15 ================= */
-if (true) {
-
-    if (isLong && pnlPct <= -30) {
+/* ================= ĐẢO CHIỀU: -30%  ĐẾN -50% + TĂNG GẤP ĐÔI VỐN, ĐẶT TP 100% ================= */
+    if (true) {
 
         try {
 
@@ -1888,7 +1886,7 @@ if (true) {
 
             const candles = candleRes?.data || [];
 
-            if (candles.length >= 22) {
+            if (candles.length >= 22 && isLong) {
 
                 /* =====================================================
                  * DÙNG NẾN M15 ĐÃ ĐÓNG
@@ -1966,13 +1964,11 @@ if (true) {
                     isSignificantBody &&
                     (
                         isLong
-
                             ? (
                                 pPrev.close > pPrev.o &&
                                 c.o >= pPrev.close &&
                                 c.close < pPrev.o
                             )
-
                             : (
                                 pPrev.close < pPrev.o &&
                                 c.o <= pPrev.close &&
@@ -1983,14 +1979,16 @@ if (true) {
 
                 /* ================= XÁC NHẬN PHÁ BOLL M15 ================= */
 
-                // LONG cũ: xét đảo SHORT khi nến M15 đóng vượt trên BB trên, nến đỏ hoặc chững lại vượt đỉnh trước
+                // LONG cũ: chỉ xét đảo SHORT khi nến đóng dưới BB dưới
+                // SHORT cũ: chỉ xét đảo LONG khi nến đóng trên BB trên
+
                 const m15Break =
-                    c.close > bbUpper &&
-                    c.close > c.o &&
-                    c.close > pPrev.h;
+                    bbStd > 0 &&
+                    c.close > bbUpper + (0.5 * bbStd) &&
+                    c.close > c.o;
 
 
-                /* ================= XÁC NHẬN XU HƯỚNG H1 (VƯỢT HẲN BOLL TRÊN H1) ================= */
+                /* ================= XÁC NHẬN XU HƯỚNG H1 ================= */
 
                 const h1Res =
                     await okxApiRequest(
@@ -2001,132 +1999,189 @@ if (true) {
                     h1Res?.data || [];
 
                 let h1Confirm = false;
+                let h1Close = 0;
+                let h1BBUpper = 0;
+                let h1BBStd = 0;
+                let h1OverBB = 0;
 
                 if (h1Candles.length >= 22) {
 
-                    const h1Closes =
+                    // ƯU TIÊN NẾN H1 ĐANG CHẠY: candles[0] là nến mới nhất.
+                    const h1Current = h1Candles[0];
+                    const h1 = h1Candles[1];
+                    const h1Prev = h1Candles[2];
+
+                    const h1CurrentClose = +h1Current[4];
+                    h1Close = +h1[4];
+
+                    const h1Open = +h1[1];
+                    const h1High = +h1[2];
+                    const h1Low = +h1[3];
+
+                    const h1PrevHigh = +h1Prev[2];
+                    const h1PrevLow = +h1Prev[3];
+
+                    // BB tính từ các nến H1 đã đóng, không đưa nến đang chạy vào mẫu.
+                    const h1BBCloses =
                         h1Candles.slice(1, 21).map(x => +x[4]);
 
-                    const h1BbMiddle =
-                        h1Closes.reduce((a, b) => a + b, 0) /
-                        h1Closes.length;
+                    const h1BBMiddle =
+                        h1BBCloses.reduce((a, b) => a + b, 0) /
+                        h1BBCloses.length;
 
-                    const h1BbVariance =
-                        h1Closes.reduce(
-                            (a, b) => a + Math.pow(b - h1BbMiddle, 2),
+                    const h1BBVariance =
+                        h1BBCloses.reduce(
+                            (a, b) => a + Math.pow(b - h1BBMiddle, 2),
                             0
-                        ) / h1Closes.length;
+                        ) / h1BBCloses.length;
 
-                    const h1BbStd =
-                        Math.sqrt(h1BbVariance);
+                    h1BBStd = Math.sqrt(h1BBVariance);
+                    h1BBUpper = h1BBMiddle + 2 * h1BBStd;
 
-                    const h1BbUpper =
-                        h1BbMiddle + 2 * h1BbStd;
+                    const h1CurrentOverBB =
+                        h1BBStd > 0
+                            ? (h1CurrentClose - h1BBUpper) / h1BBStd
+                            : 0;
 
-                    const h1 = h1Candles[1];
-                    const h1Close = +h1[4];
-                    const h1Open = +h1[1];
-                    const h1Prev = h1Candles[2];
-                    const h1PrevHigh = +h1Prev[2];
+                    const h1ClosedOverBB =
+                        h1BBStd > 0
+                            ? (h1Close - h1BBUpper) / h1BBStd
+                            : 0;
 
-                    // Điều kiện H1: Vừa thuận Long (xanh), vừa vượt hẳn ra ngoài dải BB trên của khung 1H
-                    h1Confirm =
+                    // Ưu tiên H1 đang chạy vượt BB trên; nếu chưa vượt mới xét H1 đã đóng.
+                    if (
+                        h1CurrentClose > h1BBUpper + (0.5 * h1BBStd) &&
+                        h1CurrentClose > +h1Current[1] &&
+                        h1CurrentOverBB >= 0.5
+                    ) {
+                        h1Confirm = true;
+                        h1OverBB = h1CurrentOverBB;
+                    } else if (
+                        h1Close > h1BBUpper + (0.5 * h1BBStd) &&
                         h1Close > h1Open &&
-                        h1Close > h1BbUpper &&
-                        h1Close > h1PrevHigh;
+                        h1ClosedOverBB >= 0.5
+                    ) {
+                        h1Confirm = true;
+                        h1OverBB = h1ClosedOverBB;
+                    }
                 }
 
 
                 /* ================= XÁC NHẬN TÍN HIỆU ================= */
 
-                if (m15Break && h1Confirm) {
+                const reversalPositionsRes =
+                    await okxApiRequest('/account/positions?instType=SWAP');
+
+                if (!reversalPositionsRes || reversalPositionsRes.code !== '0') continue;
+
+                // Đếm riêng các SHORT đảo chiều đã đánh dấu; không đụng bộ đếm 10 vị thế thường.
+                localStorage.setItem(
+                    'okx_reversal_positions',
+                    JSON.stringify(
+                        JSON.parse(localStorage.getItem('okx_reversal_positions') || '[]').filter(id =>
+                            (reversalPositionsRes.data || []).some(p =>
+                                p.instId === id &&
+                                p.posSide === 'short' &&
+                                Number(p.pos) > 0
+                            )
+                        )
+                    )
+                );
+
+                const reversalCount =
+                    JSON.parse(localStorage.getItem('okx_reversal_positions') || '[]').length;
+
+                /* ================= LƯU LONG VƯỢT BB CHỜ HIT TP/SL ================= */
+                if (positions[instId]) {
+                    const longBollWaiting = JSON.parse(
+                        localStorage.getItem('okx_long_boll_waiting') || '{}'
+                    );
+                    const actualLongOpen = (reversalPositionsRes.data || []).some(p =>
+                        p.instId === instId &&
+                        p.posSide === 'long' &&
+                        Number(p.pos) > 0
+                    );
+
+                    if (actualLongOpen && longBollWaiting[instId]) {
+                        positions[instId].longBollWaitingHit = true;
+                    }
+
+                    if (
+                        actualLongOpen &&
+                        isLong &&
+                        h1Confirm &&
+                        m15Break &&
+                        pnlPct > 0 &&
+                        positions[instId].status !== 'closed' &&
+                        positions[instId].status !== 'TP' &&
+                        positions[instId].status !== 'SL'
+                    ) {
+                        positions[instId].longBollWaitingHit = true;
+                        longBollWaiting[instId] = {
+                            since: longBollWaiting[instId]?.since || Date.now(),
+                            h1OverBB: h1OverBB,
+                            pnlPct: pnlPct,
+                            status: 'waiting_hit_TP_SL'
+                        };
+                        localStorage.setItem(
+                            'okx_long_boll_waiting',
+                            JSON.stringify(longBollWaiting)
+                        );
+                    }
+
+                    // Xóa trạng thái chờ khi vị thế LONG đã đóng hoặc đã hit TP/SL.
+                    if (
+                        !actualLongOpen ||
+                        positions[instId].status === 'closed' ||
+                        positions[instId].status === 'TP' ||
+                        positions[instId].status === 'SL'
+                    ) {
+                        delete positions[instId].longBollWaitingHit;
+                        delete longBollWaiting[instId];
+                        localStorage.setItem(
+                            'okx_long_boll_waiting',
+                            JSON.stringify(longBollWaiting)
+                        );
+                    }
+                }
+
+                if (
+                    isLong &&
+                    (reversalPositionsRes.data || []).some(p =>
+                        p.instId === instId &&
+                        p.posSide === 'long' &&
+                        Number(p.pos) > 0
+                    ) &&
+                    (
+                        topPump.some(x => (x.instId || x.inst) === instId) ||
+                        (reversalPositionsRes.data || []).some(p =>
+                            p.instId === instId &&
+                            p.posSide === 'long' &&
+                            Number(p.pos) > 0
+                        )
+                    ) &&
+                    h1Confirm &&
+                    m15Break &&
+                    pnlPct <= -30 &&
+                    pnlPct > -50 &&
+                    reversalCount < 2 &&
+                    !JSON.parse(localStorage.getItem('okx_reversal_positions') || '[]').includes(instId)
+                ) {
 
                     console.log(
-                        `🔄 [ĐẢO CHIỀU] ${instId} xác nhận phá BB M15 + H1 vượt hẳn Bollinger Bands trên.`
+                        `🔄 [ĐẢO SHORT] ${instId} — LONG đang âm ${pnlPct.toFixed(2)}%; H1 vượt BB trên (${h1OverBB.toFixed(2)} độ lệch chuẩn; ưu tiên nến đang chạy, nếu chưa vượt mới xét nến đã đóng), M15 xác nhận tín hiệu.`
                     );
 
 
                     /* =================================================
-                     * 1. HỦY TP/SL CŨ TRƯỚC
+                     * MỞ SHORT ĐẢO CHIỀU ĐỘC LẬP
+                     * - Không đóng LONG cũ
+                     * - Không hủy TP/SL của LONG cũ
+                     * - Vốn/khối lượng SHORT = 2 lần vị thế cũ
+                     * - Chỉ đặt TP, không đặt SL
                      * ================================================= */
 
-                    const algoConditional =
-                        await okxApiRequest(
-                            `/trade/orders-algo-pending?instId=${instId}&ordType=conditional`
-                        );
-
-                    const conditionalOrders =
-                        algoConditional?.data || [];
-
-                    for (const algo of conditionalOrders) {
-
-                        if (
-                            algo?.algoId &&
-                            (
-                                algo?.posSide === 'long'
-                                ||
-                                !algo?.posSide
-                            )
-                        ) {
-
-                            try {
-
-                                await okxApiRequest(
-                                    '/trade/cancel-algos',
-                                    'POST',
-                                    {
-                                        instId: instId,
-                                        algoId: algo.algoId,
-                                        ordType: 'conditional'
-                                    }
-                                );
-
-                            } catch (e) {}
-                        }
-                    }
-
-
-                    const algoOCO =
-                        await okxApiRequest(
-                            `/trade/orders-algo-pending?instId=${instId}&ordType=oco`
-                        );
-
-                    const ocoOrders =
-                        algoOCO?.data || [];
-
-                    for (const algo of ocoOrders) {
-
-                        if (
-                            algo?.algoId &&
-                            (
-                                algo?.posSide === 'long'
-                                ||
-                                !algo?.posSide
-                            )
-                        ) {
-
-                            try {
-
-                                await okxApiRequest(
-                                    '/trade/cancel-algos',
-                                    'POST',
-                                    {
-                                        instId: instId,
-                                        algoId: algo.algoId,
-                                        ordType: 'oco'
-                                    }
-                                );
-
-                            } catch (e) {}
-                        }
-                    }
-
-
-                    /* =================================================
-                     * 2. ĐÓNG VỊ THẾ HIỆN TẠI (ĐÓNG LONG -> SELL)
-                     * ================================================= */
-
-                    const closeRes =
+                    const reverseRes =
                         await okxApiRequest(
                             '/trade/order',
                             'POST',
@@ -2134,184 +2189,120 @@ if (true) {
                                 instId,
                                 tdMode: 'cross',
                                 side: 'sell',
-                                posSide: 'long',
+                                posSide: 'short',
                                 ordType: 'market',
                                 sz: (
-                                    typeof posQty !== 'undefined'
-                                        ? posQty
-                                        : st.sz
+                                    2 * (
+                                        typeof posQty !== 'undefined'
+                                            ? posQty
+                                            : st.sz
+                                    )
                                 ).toString()
                             }
                         );
 
+                    if (reverseRes?.code === '0') {
 
-                    if (closeRes?.code === '0') {
+                        // Đánh dấu riêng để giới hạn tối đa 2 SHORT đảo chiều độc lập.
+                        localStorage.setItem(
+                            'okx_reversal_positions',
+                            JSON.stringify([
+                                ...new Set([
+                                    ...JSON.parse(localStorage.getItem('okx_reversal_positions') || '[]'),
+                                    instId
+                                ])
+                            ])
+                        );
 
                         console.log(
-                            `🔄 [ĐẢO CHIỀU] ${instId} đã đóng vị thế cũ.`
+                            `🔄 [ĐẢO SHORT ĐỘC LẬP] ${instId} đã mở SHORT x2; giữ nguyên LONG cũ.`
                         );
 
+                        /* =========================================
+                         * LẤY GIÁ ENTRY VÀ LEVERAGE THỰC TẾ
+                         * ========================================= */
 
-                        localStorage.setItem(
-                            'last_exit_' + instId,
-                            Date.now().toString()
-                        );
-
-
-                        delete activeOrders[instId];
-
-                        localStorage.setItem(
-                            'okx_active_orders',
-                            JSON.stringify(activeOrders)
-                        );
-
-
-                        /* =============================================
-                         * 3. MỞ VỊ THẾ NGƯỢC CHIỀU x2 VỐN (TỪ LONG => SHORT)
-                         * ============================================= */
-
-                        const reverseRes =
+                        const reversePositions =
                             await okxApiRequest(
-                                '/trade/order',
+                                `/account/positions?instType=SWAP&instId=${instId}`
+                            );
+
+                        const reversePos =
+                            reversePositions?.data?.find(
+                                x =>
+                                    x?.posSide === 'short' &&
+                                    Number(x?.pos) > 0
+                            );
+
+                        const reverseEntry =
+                            Number(reversePos?.avgPx || last);
+
+                        const reverseLeverage =
+                            Number(reversePos?.lever || leverage);
+
+                        /* =========================================
+                         * TP = 100% ROI LÝ THUYẾT
+                         * SHORT: giá giảm 1/leverage
+                         * ========================================= */
+
+                        const reverseTP =
+                            reverseEntry * (1 - 1 / reverseLeverage);
+
+                        /* =========================================
+                         * CHỈ ĐẶT TP — KHÔNG ĐẶT SL
+                         * ========================================= */
+
+                        const reverseTPRes =
+                            await okxApiRequest(
+                                '/trade/order-algo',
                                 'POST',
                                 {
-                                    instId,
+                                    instId: instId,
                                     tdMode: 'cross',
-                                    side: 'sell',
+                                    side: 'buy',
                                     posSide: 'short',
-                                    ordType: 'market',
+                                    ordType: 'conditional',
                                     sz: (
-                                      (typeof posQty !== 'undefined' ? posQty : st.sz) * 2
-                                    ).toString()
+                                        2 * (
+                                            typeof posQty !== 'undefined'
+                                                ? posQty
+                                                : st.sz
+                                        )
+                                    ).toString(),
+                                    tpTriggerPx: reverseTP.toString(),
+                                    tpOrdPx: '-1',
+                                    tpTriggerPxType: 'last'
                                 }
                             );
 
+                        if (reverseTPRes?.code === '0') {
 
-                        if (reverseRes?.code === '0') {
+                            const msg =
+                                `🔄 **SHORT ĐẢO CHIỀU ĐỘC LẬP: ${instId}**\n` +
+                                `📉 PNL LONG tham chiếu: ${pnlPct.toFixed(2)}%\n` +
+                                `📊 M15 đóng trên UB và tăng; H1 vượt UB (${h1OverBB.toFixed(2)} độ lệch chuẩn)\n` +
+                                `🔁 Đã mở SHORT x2; LONG cũ vẫn giữ nguyên\n` +
+                                `🎯 TP: ${reverseTP} — mục tiêu ROI khoảng 100%\n` +
+                                `🛡️ Không đặt SL; tối đa 2 trường hợp đảo chiều độc lập`;
 
                             console.log(
-                                `🔄 [ĐẢO CHIỀU] ${instId} đã mở vị thế ngược chiều.`
+                                `🎯 [ĐẢO SHORT ĐỘC LẬP] ${instId} TP ${reverseTP} — mục tiêu ROI khoảng 100%.`
                             );
 
+                            if (typeof sendTelegram === 'function')
+                                sendTelegram(msg).catch(() => {});
 
-                            /* =========================================
-                             * 4. LẤY GIÁ ENTRY THỰC TẾ CỦA VỊ THẾ MỚI
-                             * ========================================= */
-
-                            const reversePositions =
-                                await okxApiRequest(
-                                    `/account/positions?instType=SWAP&instId=${instId}`
-                                );
-
-
-                            const reversePos =
-                                reversePositions?.data?.find(
-                                    x =>
-                                        x?.posSide === 'short' &&
-                                        Number(x?.pos) > 0
-                                );
-
-
-                            const reverseEntry =
-                                Number(
-                                    reversePos?.avgPx || last
-                                );
-
-
-                            /* =========================================
-                             * 5. TP MỚI = 100% PNL (CHO SHORT: GIÁ TP PHẢI THẤP HƠN ENTRY)
-                             * ========================================= */
-
-                            const reverseTP =
-                                reverseEntry *
-                                (
-                                    1 -
-                                    1 / leverage
-                                );
-
-
-                            /* =========================================
-                             * 6. ĐẶT TP CHO VỊ THẾ NGƯỢC CHIỀU (SHORT -> SIDE: BUY)
-                             * ========================================= */
-
-                            const reverseTPRes =
-                                await okxApiRequest(
-                                    '/trade/order-algo',
-                                    'POST',
-                                    {
-                                        instId: instId,
-                                        tdMode: 'cross',
-                                        side: 'buy',
-                                        posSide: 'short',
-                                        ordType: 'conditional',
-                                        sz: (
-                                          (typeof posQty !== 'undefined' ? posQty : st.sz) * 2
-                                        ).toString(),
-                                        tpTriggerPx:
-                                            reverseTP.toString(),
-
-                                        tpOrdPx: '-1',
-
-                                        tpTriggerPxType: 'last'
-                                    }
-                                );
-
-
-                            if (reverseTPRes?.code === '0') {
-
-                                const reverseAlgoId =
-                                    reverseTPRes?.data?.[0]?.algoId ||
-                                    null;
-
-
-                                st.currentTP =
-                                    reverseTP;
-
-                                st.tp =
-                                    reverseTP;
-
-                                st.tpAlgoId =
-                                    reverseAlgoId;
-
-                                st.peakPrice =
-                                    reverseEntry;
-
-                                st.tpBuffer =
-                                    [reverseEntry];
-                                
-                                st.tradeCase = "Rev";
-                                st.isReversal = true;
-
-                                console.log(
-                                    `🎯 [ĐẢO CHIỀU] ${instId} TP mới ${reverseTP} — mục tiêu PNL 100%.`
-                                );
-
-
-                                const msg =
-                                    `🔄 **SIÊU BOT ĐẢO CHIỀU: ${instId}**\n` +
-                                    `📉 PNL lệnh cũ: ${pnlPct.toFixed(2)}%\n` +
-                                    `📊 M15 phá BB + H1 vượt hẳn Bollinger Bands trên\n` +
-                                    `🔁 Đã đóng lệnh cũ + mở vị thế Short ngược chiều\n` +
-                                    `🎯 TP mới: ${reverseTP}\n` +
-                                    `💰 Mục tiêu PNL: 100%`;
-
-
-                                if (
-                                    typeof sendTelegram === 'function'
-                                )
-                                    sendTelegram(msg).catch(() => {});
-
-
-                            } else {
-
-                                console.warn(
-                                    `⚠️ [ĐẢO CHIỀU] ${instId} mở vị thế ngược nhưng đặt TP thất bại.`
-                                );
-                            }
-
-
-                            continue;
+                        } else {
+                            console.warn(
+                                `⚠️ [ĐẢO SHORT ĐỘC LẬP] ${instId} đã mở SHORT nhưng đặt TP thất bại.`
+                            );
                         }
+
+                        continue;
+                    } else {
+                        console.warn(
+                            `⚠️ [ĐẢO SHORT ĐỘC LẬP] ${instId} mở SHORT thất bại: ${reverseRes?.msg || reverseRes?.code || 'không rõ lỗi'}`
+                        );
                     }
                 }
             }
@@ -2324,7 +2315,6 @@ if (true) {
             );
         }
     }
-}
 
 /* ================= 1. TP & BUFFER (DYNAMIC TP + EXHAUSTION EXIT) ================= */
 
