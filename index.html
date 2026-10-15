@@ -2701,129 +2701,42 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
 
 /* ================= END TP ENGINE ================= */
 
-/* ================= 2. SL TRAILING & BUFFER (UNIFIED ENGINE) ================= */
-
-let proposedSL = null;
-const holdTimeMins = (Date.now() - (st.ts || Date.now())) / 60000;
-const isConfirmed = holdTimeMins >= 15 || pnlPct >= 50;
-const atrNow = Number(st.atr) > 0 ? Number(st.atr) : Math.abs(last - entry);
-
-// 1. CẬP NHẬT ĐỈNH GIÁ CHUẨN XÁC
-if (!st.peakPrice) st.peakPrice = last;
-if (isLong ? last > st.peakPrice : last < st.peakPrice)
-    st.peakPrice = last;
-
-const peakPrice = st.peakPrice;
-const dropFromPeak =
-    (isLong ? peakPrice - last : last - peakPrice) / peakPrice * 100 * leverage;
-
-const peakPnlPct =
-    (isLong ? peakPrice - entry : entry - peakPrice) / entry * 100 * leverage;
-
-// 2. GAP ĐỘNG THEO PNL ĐỈNH
-let dropTrigger =
-    peakPnlPct >= 200 ? 3 :
-    peakPnlPct >= 150 ? 3.5 :
-    peakPnlPct >= 120 ? 4 :
-    peakPnlPct >= 100 ? 5 :
-    peakPnlPct >= 80 ? 6 :
-    peakPnlPct >= 60 ? 7 :
-    peakPnlPct >= 40 ? 9 :
-    peakPnlPct >= 30 ? 11 :
-    15;
-
-// 3. GAP THEO BOLLINGER BANDS
-const bb = isLong ? Number(st.upperBB) : Number(st.lowerBB);
-
-if (
-    Number.isFinite(bb) &&
-    bb > 0 &&
-    (isLong ? peakPrice > bb : peakPrice < bb)
-) {
-    const bbDist = Math.abs(peakPrice - bb) / bb * 100;
-
-    const bbDrop =
-        bbDist >= 3 ? 2.5 :
-        bbDist >= 2 ? 3.5 :
-        bbDist >= 1 ? 5 :
-        bbDist >= 0.5 ? 7 :
-        15;
-
-    dropTrigger = Math.min(dropTrigger, bbDrop);
+/* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
+// Nếu chưa có biến proposedSL thì mới khởi tạo, nếu có rồi thì gán lại về null
+if (typeof proposedSL === 'undefined') {
+    var proposedSL = null;
+} else {
+    proposedSL = null;
 }
 
-// 4. NHẬN DIỆN ĐỘNG LƯỢNG SUY YẾU & KIỆT SỨC
-const p1 = st.tpBuffer?.[st.tpBuffer.length - 1] || last;
-const p2 = st.tpBuffer?.[st.tpBuffer.length - 2] || last;
+const holdTimeMins = (Date.now() - st.ts) / 60000;
+const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10; 
 
-const awayFromPeak = isLong
-    ? last < peakPrice
-    : last > peakPrice;
+// CHỈ TÍNH TRAILING SL NẾU CÓ SL BAN ĐẦU / HOẶC ĐANG KHÓA TP CŨ
+const hasOriginalSL = Boolean(st.sl || st.currentSL);
 
-const pullbackPct =
-    (isLong
-        ? (peakPrice - last) / peakPrice
-        : (last - peakPrice) / peakPrice) * 100;
-
-const meaningfulPullback = awayFromPeak && pullbackPct >= 0.8;
-
-const momentumWeak = isLong ? p1 < p2 : p1 > p2;
-
-const volumeWeak =
-    Number.isFinite(Number(st.volSpread)) &&
-    Number(st.volSpread) <= 0.80;
-
-const rsiExtreme =
-    Number.isFinite(Number(st.rsi)) &&
-    (isLong ? Number(st.rsi) >= 70 : Number(st.rsi) <= 30);
-
-const moneyExhaustion =
-    momentumWeak && (volumeWeak || rsiExtreme);
-
-const isBlackSwanExit =
-    st.isSpecial &&
-    pnlPct >= 25 &&
-    awayFromPeak &&
-    meaningfulPullback &&
-    moneyExhaustion;
-
-// 5. TRAILING SL DUY NHẤT (TỐI ƯU ĐÒN BẨY CAO & NÉ RÂU)
-if (forceSLtoOldTP && Number(st.tp) > 0) {
-    proposedSL = Number(st.tp);
-} else if (pnlPct >= 10 && isConfirmed) {
-    let atrMultiplier =
-        pnlPct >= 50 ? 0.8 :
-        pnlPct >= 25 ? 1.2 :
-        pnlPct >= 15 ? 1.5 :
-        2.0;
-
-    // Siết gap khi rút từ đỉnh hoặc kiệt sức dòng tiền
-    if ((dropFromPeak >= dropTrigger && awayFromPeak) || isBlackSwanExit) {
-        atrMultiplier = Math.min(atrMultiplier, 0.5);
+// 1. ƯU TIÊN CAO NHẤT: Khi TP động (Shadow TP) đã kích hoạt, khóa SL ngay theo cấu trúc đã định
+if (forceSLtoOldTP && st.tp) {
+    proposedSL = +st.tp; 
+} 
+// 2. CHỈ TRAILING KHI BAN ĐẦU CÓ CÀI SL
+else if (hasOriginalSL) {
+    // REVERSAL / LÃI CỰC LỚN (>= 50%): Siết cực chặt bằng ATR nhỏ hoặc bám đỉnh
+    if ((st.tradeCase?.includes("Rev") && pnlPct >= 30) || pnlPct >= 50) {
+        proposedSL = isLong ? last - (st.atr * 1.0) : last + (st.atr * 1.0);
     }
-
-    proposedSL = isLong
-        ? last - atrNow * atrMultiplier
-        : last + atrNow * atrMultiplier;
-
-    // Bảo toàn lợi nhuận khi đã đạt PNL >= 15%
-    if (pnlPct >= 15) {
-        const lockSL = entry * (1 + (isLong ? 0.0025 : -0.0025));
-        proposedSL = isLong
-            ? Math.max(proposedSL, lockSL)
-            : Math.min(proposedSL, lockSL);
+    // LÃI TRUNG BÌNH CAO (25% - 50%) && Đã xác nhận thời gian
+    else if (pnlPct >= 25 && isConfirmed) { 
+        proposedSL = isLong ? last - (st.atr * 1.5) : last + (st.atr * 1.5);
     }
-}
-
-// 6. CHỈ SIẾT SL THEO HƯỚNG CÓ LỢI (CHỐNG LÙI TUYỆT ĐỐI)
-if (Number.isFinite(proposedSL) && proposedSL > 0) {
-    const currentSL = Number(st.currentSL) || 0;
-
-    if (isLong && currentSL > 0)
-        proposedSL = Math.max(proposedSL, currentSL);
-
-    if (!isLong && currentSL > 0)
-        proposedSL = Math.min(proposedSL, currentSL);
+    // LÃI KHỞI ĐẦU AN TOÀN (15% - 25%): Bảo toàn vốn, dời SL qua Entry + phí
+    else if (pnlPct >= 15 && isConfirmed) {
+        proposedSL = entry * (1 + (isLong ? 0.003 : -0.003)); 
+    }
+    // GIA ĐOẠN ĐẦU (10% - 15%): Kê SL rộng hơn một chút để chống quét râu nến
+    else if (pnlPct >= 10 && isConfirmed) {
+        proposedSL = isLong ? last - (st.atr * 2.0) : last + (st.atr * 2.0);
+    }
 }
 
 /* ================= 3. ĐẢM BẢO SL CHỈ TIẾN KHÔNG LÙI (FIXED) ================= */
@@ -2946,40 +2859,56 @@ if (finalSL && st.slAlgoId) {
                     }
 
                     /* ================= 7. ĐẶT LỆNH DUY NHẤT ================= */
-                    const finalOrdType = roundedTP ? 'oco' : 'conditional';
-                    const payload = {
-                        instId, tdMode: 'cross', side: isLong ? 'sell' : 'buy',
-                        posSide: isLong ? 'long' : 'short', ordType: finalOrdType,
-                        sz: posQty.toString(), slTriggerPx: finalSL.toString(), slOrdPx: '-1'
-                    };
-                    if (roundedTP) {
-                        payload.tpTriggerPx = roundedTP.toString();
-                        payload.tpOrdPx = '-1';
-                    }
+                // Nếu không có cả TP lẫn SL thì không gửi lệnh algo
+                if (!roundedTP && !finalSL) continue;
 
-                    const res = await okxApiRequest('/trade/order-algo', 'POST', payload);
+                // Xác định loại lệnh: nếu có đủ TP và SL thì dùng 'oco', ngược lại dùng 'conditional'
+                const finalOrdType = (roundedTP && finalSL) ? 'oco' : 'conditional';
+                
+                const payload = {
+                    instId, 
+                    tdMode: 'cross', 
+                    side: isLong ? 'sell' : 'buy',
+                    posSide: isLong ? 'long' : 'short', 
+                    ordType: finalOrdType,
+                    sz: posQty.toString()
+                };
 
-                    if (res?.code === '0') {
-                        st.currentTP = roundedTP;
-                        st.currentSL = finalSL;
-                        st.slAlgoId = res.data?.[0]?.algoId || st.slAlgoId;
-                        st.lastTrail = Date.now();
-                        
-                        const logMsg = `🔄 **SIÊU BOT TÂN DỜI TP/SL: ${instId}**\n` +
-                                     `💰 PNL: ${pnlPct.toFixed(2)}% (x${leverage})\n` +
-                                     `🎯 TP: ${roundedTP || 'Gồng trend (Đã gỡ TP)'}\n` +
-                                     `🛡️ SL: ${finalSL} ${forceSLtoOldTP ? '(Đã khóa TP cũ)' : ''}`;
-                        
-                        if (typeof sendTelegram === 'function') sendTelegram(logMsg).catch(() => {});
-                        console.log(`✅ [SUCCESS] ${instId}: Đã dời SL đến ${finalSL}`);
-                    }
+                // Chỉ đưa TP vào payload nếu tồn tại roundedTP
+                if (roundedTP) {
+                    payload.tpTriggerPx = roundedTP.toString();
+                    payload.tpOrdPx = '-1';
                 }
 
-            } catch (err) { console.error(`Lỗi Monitor ${p.instId}:`, err); }
-        }
-        localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
-        if (typeof renderUI === 'function') renderUI(); 
-    } catch (e) { console.error("Lỗi Monitor Tổng:", e); }
+                // Chỉ đưa SL vào payload nếu tồn tại finalSL
+                if (finalSL) {
+                    payload.slTriggerPx = finalSL.toString();
+                    payload.slOrdPx = '-1';
+                }
+
+                const res = await okxApiRequest('/trade/order-algo', 'POST', payload);
+
+                if (res?.code === '0') {
+                    st.currentTP = roundedTP;
+                    st.currentSL = finalSL;
+                    st.slAlgoId = res.data?.[0]?.algoId || st.slAlgoId;
+                    st.lastTrail = Date.now();
+                    
+                    const logMsg = `🔄 **SIÊU BOT TÂN DỜI TP/SL: ${instId}**\n` +
+                                   `💰 PNL: ${pnlPct.toFixed(2)}% (x${leverage})\n` +
+                                   `🎯 TP: ${roundedTP || 'Gồng trend (Đã gỡ TP)'}\n` +
+                                   `🛡️ SL: ${finalSL ? finalSL + (forceSLtoOldTP ? ' (Đã khóa TP cũ)' : '') : 'Không có SL'}`;
+                    
+                    if (typeof sendTelegram === 'function') sendTelegram(logMsg).catch(() => {});
+                    console.log(`✅ [SUCCESS] ${instId}: Đã cập nhật lệnh thành công`);
+                }
+            }
+
+        } catch (err) { console.error(`Lỗi Monitor ${p.instId}:`, err); }
+    }
+    localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
+    if (typeof renderUI === 'function') renderUI(); 
+} catch (e) { console.error("Lỗi Monitor Tổng:", e); }
 }
 
 /* ================== HÀM LƯU TRỮ DỮ LIỆU ================== */
