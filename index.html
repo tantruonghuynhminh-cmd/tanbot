@@ -1732,7 +1732,8 @@ const pool = (qualityCandidates || [])
             };
             localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
         }
-
+            // Tính toán lại giá trị ký quỹ thực tế trước khi gửi thông báo
+            const actualMargin = (parseFloat(finalQty) * p.last * ctVal) / currentLeverage;
             log(`✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | Case: ${p.tradeCase} | Entry: ${p.last} | Lev: ${currentLeverage}x | TP/SL: OK`);
 
             const msg =
@@ -2822,7 +2823,7 @@ const holdTimeMins = (Date.now() - st.ts) / 60000; // Tính thời gian giữ l�
 
 // CHẶN QUÉT NON: Chỉ bắt đầu Trailing khi lệnh đã chạy được ít nhất 5-10 phút 
 // hoặc PNL đã đạt một ngưỡng an toàn nhất định.
-const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10; 
+const isConfirmed = holdTimeMins >= 10 || pnlPct >= 30; 
 
 // SỬA LỖI CHỒNG CHÉO: Dùng cấu trúc else if phân cấp từ cao xuống thấp
 if (forceSLtoOldTP && st.tp) {
