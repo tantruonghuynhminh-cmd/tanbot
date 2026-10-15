@@ -1609,34 +1609,43 @@ const pool = (qualityCandidates || [])
    /* ===============================
      * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT
      * =============================== */
-    if (typeof openPositions !== 'undefined') {
-    openIds = new Set(openPositions.map(p => p.instId));
-}
+        
+   // 🟢 FIX ĐIỂM NGHẼN: Cập nhật lại openIds thực tế từ OKX trước khi lặp (Tránh bị kẹt ID lệnh cũ)
+   // Giả định biến openPositions chứa danh sách vị thế thực tế từ Bước 1
+      if (typeof openPositions !== 'undefined') {
+         openIds = new Set(openPositions.map(p => p.instId));
+      }
 
-for (const p of pool) {
-    if (openIds.size >= MAX_POSITIONS) {
-        log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
-        break;
-    }
-    if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
+      for (const p of pool) {
+    // 1. Kiểm tra giới hạn số lượng vị thế đang mở thực tế
+      if (openIds.size >= MAX_POSITIONS) {
+       log(`⚠️ Đã đạt giới hạn tối đa ${MAX_POSITIONS} vị thế đang chạy.`);
+       break;
+      }
+    
+      if (!p?.instId || !p.side || !p.tp || !p.sl) continue;
+    
+    // 2. Bỏ qua nếu mã này ĐANG MỞ VỊ THẾ THỰC TẾ trên OKX
     if (openIds.has(p.instId)) continue;
 
     const now = Date.now();
 
        try {
+        // FIX LỖI 1: Chuẩn hóa side về chữ thường ('buy' hoặc 'sell')
         const sideLower = String(p.side).toLowerCase();
         if (sideLower !== 'buy' && sideLower !== 'sell') continue;
 
+        // Xác định posSide chính xác 100% không lo lỗi hoa/thường
         const posSide = sideLower === 'buy' ? 'long' : 'short';
 
         const instRes = await okxPublic(`/public/instruments?instType=SWAP&instId=${p.instId}`);
         const info = instRes?.data?.[0];
         if (!info) continue;
 
-    const ctVal = parseFloat(info.ctVal);
-    const lotSz = parseFloat(info.lotSz);
-    const tickSz = parseFloat(info.tickSz);
-    const minSz = parseFloat(info.minSz || lotSz);
+        const ctVal = parseFloat(info.ctVal);
+        const lotSz = parseFloat(info.lotSz);
+        const tickSz = parseFloat(info.tickSz);
+        const minSz = parseFloat(info.minSz || lotSz);
 
     const qPrec = info.lotSz.includes('.') ? info.lotSz.split('.')[1].length : 0;
     const pPrec = info.tickSz.includes('.') ? info.tickSz.split('.')[1].length : 0;
@@ -1724,19 +1733,14 @@ for (const p of pool) {
             localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
         }
 
-            log(
-                `✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | ` +
-                `Case: ${p.tradeCase || 'Normal'} | Entry dự kiến: ${p.last} | ` +
-                `Lev: ${selectedLeverage}x | ` +
-                `Ký quỹ ước tính: $${actualMargin.toFixed(4)} | TP/SL: OK`
-            );
+            log(`✅ HOÀN TẤT ${p.instId} | Side: ${posSide.toUpperCase()} | Case: ${p.tradeCase} | Entry: ${p.last} | Lev: ${currentLeverage}x | TP/SL: OK`);
 
             const msg =
                 `🚀 SUPPER BOT TÂN VÀO LỆNH THÀNH CÔNG\n` +
                 `💎 Coin: ${p.instId.replace('-USDT-SWAP', '')}\n` +
                 `📊 Side: ${posSide.toUpperCase()}\n` +
                 `📝 Case: ${p.tradeCase || 'Normal'}\n` +
-                `⚡ Leverage: ${selectedLeverage}x\n` +
+                `⚡ Leverage: ${currentLeverage}x\n` +
                 `💵 Entry dự kiến: ${p.last}\n` +
                 `💰 Target Margin: $${fixedMarginPerOrder}\n` +
                 `💰 Estimated Margin: $${actualMargin.toFixed(4)}\n` +
@@ -2812,60 +2816,126 @@ if (pnlPct >= tpThreshold || st.peakPrice) {
     finalTP = st.tp || st.currentTP;
 }
 
-             /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
-let proposedSL = null; 
-const holdTimeMins = (Date.now() - st.ts) / 60000;
-const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10; 
+             
 
-// 1. ƯU TIÊN CAO NHẤT: Khi TP động (Shadow TP) đã kích hoạt, khóa SL ngay theo cấu trúc đã định
-if (st.isReversal || st.tradeCase?.includes("Rev")) {
-    proposedSL = null;
+
+               
+/* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
+
+let proposedSL = null;
+const holdTimeMins = (Date.now() - st.ts) / 60000;
+const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10;
+const atrNow = Number(st.atr) > 0 ? Number(st.atr) : Math.abs(last - entry);
+
+// 1. CẬP NHẬT ĐỈNH GIÁ
+if (!st.peakPrice) st.peakPrice = last;
+if (isLong ? last > st.peakPrice : last < st.peakPrice)
+    st.peakPrice = last;
+
+const peakPrice = st.peakPrice;
+const dropFromPeak =
+    (isLong ? peakPrice - last : last - peakPrice) / peakPrice * 100;
+
+const peakPnlPct =
+    (isLong ? peakPrice - entry : entry - peakPrice) / entry * 100 * leverage;
+
+// 2. GAP THEO BIẾN ĐỘNG GIÁ — TRÁNH RÚT RÂU / HỒI KỸ THUẬT
+const bb = isLong ? Number(st.upperBB) : Number(st.lowerBB);
+
+const p1 = st.tpBuffer?.[st.tpBuffer.length - 1] || last;
+const p2 = st.tpBuffer?.[st.tpBuffer.length - 2] || last;
+
+const awayFromPeak = isLong
+    ? last < peakPrice
+    : last > peakPrice;
+
+const pullbackPct =
+    (isLong
+        ? (peakPrice - last) / peakPrice
+        : (last - peakPrice) / peakPrice) * 100;
+
+const meaningfulPullback = awayFromPeak && pullbackPct >= 1;
+const momentumWeak = isLong ? p1 < p2 : p1 > p2;
+
+const volumeWeak =
+    Number.isFinite(Number(st.volSpread)) &&
+    Number(st.volSpread) <= 0.80;
+
+const rsiExtreme =
+    Number.isFinite(Number(st.rsi)) &&
+    (isLong ? Number(st.rsi) >= 70 : Number(st.rsi) <= 30);
+
+const moneyExhaustion =
+    momentumWeak && (volumeWeak || rsiExtreme);
+
+const isBlackSwanExit =
+    st.isSpecial &&
+    pnlPct > 0 &&
+    awayFromPeak &&
+    meaningfulPullback &&
+    moneyExhaustion;
+
+// 3. TRAILING SL THEO GAP ATR, KHÔNG SIẾT QUÁ SÁT
+if (forceSLtoOldTP && Number(st.tp) > 0) {
+    proposedSL = Number(st.tp);
+} else if (pnlPct > 0 && isConfirmed && atrNow > 0 && last > 0) {
+
+    // GAP tối thiểu 1,5 ATR để hạn chế bị quét bởi nhịp hồi/rút râu
+    proposedSL = isLong
+        ? last - atrNow * 1.5
+        : last + atrNow * 1.5;
+
+    // Khi lợi nhuận đỉnh tăng, khóa dần lợi nhuận nhưng giữ GAP theo ATR
+    if (peakPnlPct >= 10) {
+        proposedSL = isLong
+            ? Math.max(proposedSL, peakPrice - atrNow * 2)
+            : Math.min(proposedSL, peakPrice + atrNow * 2);
+    }
+
+    // Chỉ siết thêm khi giá đã hồi khỏi đỉnh và dòng tiền suy yếu xác nhận
+    if (meaningfulPullback && moneyExhaustion) {
+        proposedSL = isLong
+            ? Math.max(proposedSL, last - atrNow * 1.25)
+            : Math.min(proposedSL, last + atrNow * 1.25);
+    }
+
+    // Bảo toàn lợi nhuận khi PNL đạt ít nhất 15%
+    if (pnlPct >= 15) {
+        proposedSL = isLong
+            ? Math.max(proposedSL, entry * 1.001)
+            : Math.min(proposedSL, entry * 0.999);
+    }
+
+    // Kiệt sức mạnh: siết GAP vừa phải, không đóng lệnh chỉ vì một tín hiệu
+    if (isBlackSwanExit) {
+        proposedSL = isLong
+            ? Math.max(proposedSL, last - atrNow * 1.0)
+            : Math.min(proposedSL, last + atrNow * 1.0);
+    }
 }
-else if (forceSLtoOldTP && st.tp) {
-    proposedSL = +(st.currentTP || st.tp);
-} 
-// 2. REVERSAL / LÃI CỰC LỚN: Không tự gắn SL cho lệnh đảo chiều
-else if (pnlPct >= 50) {
-    proposedSL = isLong ? last - (st.atr * 1.0) : last + (st.atr * 1.0);
-}
-// 3. LÃI TRUNG BÌNH CAO (25% - 50%) && Đã xác nhận thời gian
-else if (pnlPct >= 25 && isConfirmed) { 
-    proposedSL = isLong ? last - (st.atr * 1.5) : last + (st.atr * 1.5);
-}
-// 4. LÃI KHỞI ĐẦU AN TOÀN (15% - 25%): Bảo toàn vốn, dời SL qua Entry + phí
-else if (pnlPct >= 15 && isConfirmed) {
-    proposedSL = entry * (1 + (isLong ? 0.003 : -0.003)); 
-}
-// 5. GIAI ĐOẠN ĐẦU (10% - 15%): Kê SL rộng hơn một chút để chống quét râu nến
-else if (pnlPct >= 10 && isConfirmed) {
-    proposedSL = isLong ? last - (st.atr * 2.0) : last + (st.atr * 2.0); // Dùng 2.0 ATR cho thoáng
+
+// 4. CHỈ SIẾT SL THEO HƯỚNG CÓ LỢI
+if (Number.isFinite(proposedSL) && proposedSL > 0) {
+    const currentSL = Number(st.currentSL) || 0;
+
+    if (isLong && currentSL > 0)
+        proposedSL = Math.max(proposedSL, currentSL);
+
+    if (!isLong && currentSL > 0)
+        proposedSL = Math.min(proposedSL, currentSL);
 }
 
 /* ================= 3. ĐẢM BẢO SL CHỈ TIẾN KHÔNG LÙI (FIXED) ================= */
-if (
-    !positions[instId]?.isReversal &&
-    !st.tradeCase?.includes("Rev") &&
-    proposedSL !== null &&
-    Number.isFinite(Number(proposedSL)) &&
-    Number(proposedSL) > 0
-) {
+if (proposedSL !== null) {
     let canUpdateSL = false;
     const currentSLVal = +st.currentSL || 0;
-
-    // Đảm bảo SL mới phải nằm đúng phía giá hiện tại
+    
+    // Đảm bảo SL mới phải tốt hơn SL cũ (tiến lên với Long, lùi xuống với Short)
     if (isLong) {
-        if (proposedSL < last) {
-            if (proposedSL > currentSLVal) canUpdateSL = true;
-        }
+        if (proposedSL > currentSLVal) canUpdateSL = true;
     } else {
-        const currentSLValShort =
-            (st.currentSL === 0 || !st.currentSL)
-                ? Infinity
-                : +st.currentSL;
-
-        if (proposedSL > last) {
-            if (proposedSL < currentSLValShort) canUpdateSL = true;
-        }
+        const currentSLValShort = (st.currentSL === 0 || !st.currentSL) ? Infinity : +st.currentSL;
+        if (proposedSL < currentSLValShort) canUpdateSL = true;
     }
 
     if (canUpdateSL && !st.slBuffer.includes(proposedSL)) {
@@ -2874,58 +2944,29 @@ if (
     }
 }
 
-let bestSL = st.slBuffer.length > 0
+let bestSL = st.slBuffer.length > 0 
     ? (isLong ? Math.max(...st.slBuffer) : Math.min(...st.slBuffer))
     : (st.sl || st.currentSL);
 
 // Luôn so sánh với SL gốc để không bao giờ vi phạm điểm cắt lỗ ban đầu
-if (!positions[instId]?.isReversal && !st.tradeCase?.includes("Rev") && st.sl) {
-    bestSL = isLong
-        ? Math.max(bestSL, +st.sl)
-        : Math.min(bestSL, +st.sl);
+if (st.sl) {
+    bestSL = isLong ? Math.max(bestSL, +st.sl) : Math.min(bestSL, +st.sl);
 }
 
 let finalSL = bestSL;
 
-// ĐẢO CHIỀU TP-ONLY:
-// Khi là lệnh đảo chiều thì không được phép có SL từ engine này
-if (positions[instId]?.isReversal || st.tradeCase?.includes("Rev")) {
-    finalSL = null;
-}
-
-
-/* ================= 4. GỬI LỆNH AMEND SL (TRAILING THẬT) ================= */
-if (
-    finalSL &&
-    Number.isFinite(Number(finalSL)) &&
-    Number(finalSL) > 0 &&
-    st.slAlgoId &&
-    (
-        !positions[instId]?.isReversal ||
-        pnlPct > 50
-    )
-) {
+                /* ================= 4. GỬI LỆNH AMEND SL (TRAILING THẬT) ================= */
+if (finalSL && st.slAlgoId) {
 
     const currentSL = +st.currentSL || 0;
 
     let needAmend = false;
 
-    // Không cho SL nằm sai phía giá hiện tại
     if (isLong) {
-        if (finalSL < last && finalSL > currentSL) {
-            needAmend = true;
-        }
+        if (finalSL > currentSL) needAmend = true;
     } else {
         const cur = currentSL === 0 ? Infinity : currentSL;
-
-        if (finalSL > last && finalSL < cur) {
-            needAmend = true;
-        }
-    }
-
-    // Đảo chiều TP-only: chỉ bắt đầu trailing SL khi PNL > 50%
-    if (positions[instId]?.isReversal && pnlPct <= 50) {
-        needAmend = false;
+        if (finalSL < cur) needAmend = true;
     }
 
     // Anti spam + tránh lỗi 429
@@ -2944,17 +2985,13 @@ if (
                     st.currentSL = finalSL;
                     st.lastTrail = Date.now();
 
-                    if (typeof log === 'function')
-                        log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
-                    else
-                        console.log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
+                    if (typeof log === 'function') log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
+                    else console.log(`🔁 TRAILING ${instId} → SL: ${finalSL}`);
                 }
 
             } catch (e) {
-                if (typeof log === 'function')
-                    log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
-                else
-                    console.log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
+                if (typeof log === 'function') log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
+                else console.log(`❌ Amend SL lỗi ${instId}: ${e.message}`);
             }
 
         }
