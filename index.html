@@ -2701,7 +2701,8 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
 
 /* ================= END TP ENGINE ================= */
 
-/* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
+
+               /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
 // Nếu chưa có biến proposedSL thì mới khởi tạo, nếu có rồi thì gán lại về null
 if (typeof proposedSL === 'undefined') {
     var proposedSL = null;
@@ -2909,6 +2910,48 @@ if (finalSL && st.slAlgoId) {
     localStorage.setItem('okx_active_orders', JSON.stringify(activeOrders));
     if (typeof renderUI === 'function') renderUI(); 
 } catch (e) { console.error("Lỗi Monitor Tổng:", e); }
+}
+
+/* ================== HÀM LƯU TRỮ DỮ LIỆU ================== */
+function saveOrders() {
+    try {
+        // ===== FIX LOCALSTORAGE CONFLICT (ĐỒNG BỘ THEO DỮ LIỆU THỰC TẾ) =====
+        const oldActive = JSON.parse(
+            localStorage.getItem('okx_active_orders') || '{}'
+        );
+
+        // Thay vì gộp mù quáng (khiến lệnh cũ không mất đi), 
+        // ta chỉ giữ lại những lệnh thực sự đang tồn tại trong biến RAM 'activeOrders'
+        const mergedActive = {};
+
+        for (const k in activeOrders) {
+            // Cập nhật thông tin mới nhất vào bản ghi, giữ lại thuộc tính cũ nếu cần
+            mergedActive[k] = {
+                ordType: 'oco',
+                ...(oldActive[k] || {}),
+                ...(activeOrders[k] || {})
+            };
+        }
+
+        // Lưu bản ghi đã được dọn dẹp (chỉ chứa các lệnh thực tế đang chạy)
+        localStorage.setItem(
+            'okx_active_orders',
+            JSON.stringify(mergedActive)
+        );
+
+        // Lịch sử giao dịch giữ nguyên hành vi cũ
+        localStorage.setItem(
+            'okx_trade_history',
+            JSON.stringify(tradeHistory)
+        );
+
+        // Đồng bộ lại RAM - Đảm bảo RAM không chứa các "lệnh ma" đã bị xóa ở trên
+        activeOrders = mergedActive;
+
+        console.log("💾 Đã lưu trạng thái lệnh và lịch sử vào máy.");
+    } catch (e) {
+        console.error("❌ Không thể lưu dữ liệu vào LocalStorage:", e);
+    }
 }
 
 /* ================== HÀM LƯU TRỮ DỮ LIỆU ================== */
