@@ -1592,9 +1592,44 @@ async function masterFlow(qualityCandidates) {
   /* ===============================
      * 3. POOL TÍN HIỆU (THEO DELTA THUẦN)
      * =============================== */
-const pool = (qualityCandidates || [])
+// 1️⃣ Đổi const -> let tại đây
+let pool = (qualityCandidates || [])
     .filter(p => p && p.instId)
     .sort((a, b) => Math.abs(b.delta || 0) - Math.abs(a.delta || 0));
+
+const remainingSlots = MAX_POSITIONS - openIds.size;
+
+if (remainingSlots <= 0) return;
+
+// Đếm LONG / SHORT đang mở thực tế
+const openLongCount = openPositions.filter(p =>
+    p.posSide === 'long' || (p.posSide === 'net' && Number(p.pos) > 0)
+).length;
+
+const openShortCount = openPositions.filter(p =>
+    p.posSide === 'short' || (p.posSide === 'net' && Number(p.pos) < 0)
+).length;
+
+// Chia slot mới theo hướng đang thiếu vị thế
+const longPool = pool.filter(p => p.side === 'buy');
+const shortPool = pool.filter(p => p.side === 'sell');
+
+let maxLong = Math.ceil(remainingSlots / 2);
+let maxShort = Math.floor(remainingSlots / 2);
+
+if (openLongCount > openShortCount) {
+    maxShort = Math.ceil(remainingSlots / 2);
+    maxLong = Math.floor(remainingSlots / 2);
+} else if (openShortCount > openLongCount) {
+    maxLong = Math.ceil(remainingSlots / 2);
+    maxShort = Math.floor(remainingSlots / 2);
+}
+
+// 2️⃣ Bỏ từ khóa "const", chỉ gán lại giá trị cho "pool"
+pool = [
+    ...longPool.slice(0, maxLong),
+    ...shortPool.slice(0, maxShort)
+];
 
 
    /* ===============================
