@@ -1596,7 +1596,7 @@ async function masterFlow(qualityCandidates) {
 let pool = (qualityCandidates || [])
     .filter(p => p && p.instId)
     .sort((a, b) => Math.abs(b.delta || 0) - Math.abs(a.delta || 0));
-if (false) {
+
 const remainingSlots = MAX_POSITIONS - openIds.size;
 
 if (remainingSlots <= 0) return;
@@ -1630,7 +1630,7 @@ pool = [
     ...longPool.slice(0, maxLong),
     ...shortPool.slice(0, maxShort)
 ];
-}
+
 
     /* ===============================
      * 4. LOOP VÀO LỆNH VỚI VỐN ĐÃ CHỐT
@@ -1710,7 +1710,7 @@ for (const p of pool) {
             instId: p.instId,
             lever: currentLeverage.toString(),
             mgnMode: 'cross',
-            posSide: p.side === 'buy' ? 'long' : 'short'
+            posSide: posSide // Dùng biến posSide đã chuẩn hóa ở trên
         });
 
         if (levRes?.code === '0' || levRes?.code === '32115') {
@@ -1751,17 +1751,17 @@ for (const p of pool) {
     const slStr = (Math.round(safeSl / tickSz) * tickSz).toFixed(pPrec);
 
     const res = await okxApiRequest('/trade/order', 'POST', {
-        instId: p.instId,
-        tdMode: 'cross',
-        side: p.side,
-        posSide: p.side === 'buy' ? 'long' : 'short',
-        ordType: 'market',
-        sz: finalQty,
-        attachAlgoOrds: [
-            { algoOrdType: 'take_profit', tpTriggerPx: tpStr, tpOrdPx: '-1' },
-            { algoOrdType: 'stop_loss', slTriggerPx: slStr, slOrdPx: '-1' }
-        ]
-    });
+    instId: p.instId,
+    tdMode: 'cross',
+    side: sideLower,          // Sửa p.side thành sideLower
+    posSide: posSide,         // Sửa p.side === 'buy' ? 'long' : 'short' thành posSide
+    ordType: 'market',
+    sz: finalQty,
+    attachAlgoOrds: [
+        { algoOrdType: 'take_profit', tpTriggerPx: tpStr, tpOrdPx: '-1' },
+        { algoOrdType: 'stop_loss', slTriggerPx: slStr, slOrdPx: '-1' }
+    ]
+});
 
     if (res?.code === '0') {
         if (typeof activeOrders !== 'undefined') {
