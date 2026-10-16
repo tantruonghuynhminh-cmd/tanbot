@@ -2750,7 +2750,7 @@ const pullbackPct =
         ? (peakPrice - last) / peakPrice
         : (last - peakPrice) / peakPrice) * 100;
 
-const meaningfulPullback = awayFromPeak && pullbackPct >= 1;
+const meaningfulPullback = awayFromPeak && pullbackPct >= 0.5;
 const momentumWeak = isLong ? p1 < p2 : p1 > p2;
 
 const volumeWeak =
@@ -2785,22 +2785,22 @@ if (hasOriginalSL) {
         // Khi lợi nhuận đỉnh tăng, khóa dần lợi nhuận nhưng giữ GAP theo ATR
         if (peakPnlPct >= 10) {
             proposedSL = isLong
-                ? Math.max(proposedSL, peakPrice - atrNow * 2)
-                : Math.min(proposedSL, peakPrice + atrNow * 2);
+                ? Math.max(proposedSL, peakPrice - atrNow * 1.5)
+                : Math.min(proposedSL, peakPrice + atrNow * 1.5);
         }
 
         // Chỉ siết thêm khi giá đã hồi khỏi đỉnh và dòng tiền suy yếu xác nhận
         if (meaningfulPullback && moneyExhaustion) {
             proposedSL = isLong
-                ? Math.max(proposedSL, last - atrNow * 1.25)
-                : Math.min(proposedSL, last + atrNow * 1.25);
+                ? Math.max(proposedSL, last - atrNow * 1.0)
+                : Math.min(proposedSL, last + atrNow * 1.0);
         }
 
         // Bảo toàn lợi nhuận khi PNL đạt ít nhất 15%
-        if (pnlPct >= 15) {
+        if (peakPnlPct >= 15) {
             proposedSL = isLong
-                ? Math.max(proposedSL, entry * 1.001)
-                : Math.min(proposedSL, entry * 0.999);
+                ? Math.max(proposedSL, entry * (1 + 5 / (100 * leverage)))
+                : Math.min(proposedSL, entry * (1 - 5 / (100 * leverage)));
         }
 
         // Kiệt sức mạnh: siết GAP vừa phải, không đóng lệnh chỉ vì một tín hiệu
