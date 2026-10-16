@@ -1321,12 +1321,14 @@ for (const t of top120Tickers) {
     topPump = candidates
       .filter(x => x.delta > 0)
       .sort((a, b) => b.delta - a.delta)
-      .slice(0, TOP_N);
+      .slice(0, TOP_N)
+      .map(x => ({ ...x, side: 'buy' }));  // 🟢 Đảm bảo Top Pump luôn là Long (buy)
 
     topDump = candidates
       .filter(x => x.delta < 0)
       .sort((a, b) => a.delta - b.delta)
-      .slice(0, TOP_N);
+      .slice(0, TOP_N)
+      .map(x => ({ ...x, side: 'sell' })); // 🔴 Đảm bảo Top Dump luôn là Short (sell)
 
     // Đồng bộ Top 5 mới nhất cho khối đảo chiều trong monitorOrders()
     globalThis._botTopPump = topPump.map(x => x.instId);
