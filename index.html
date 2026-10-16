@@ -2773,43 +2773,7 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
 /* ================= END TP ENGINE ================= */
 
 
-               /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
-// Nếu chưa có biến proposedSL thì mới khởi tạo, nếu có rồi thì gán lại về null
-if (typeof proposedSL === 'undefined') {
-    var proposedSL = null;
-} else {
-    proposedSL = null;
-}
-
-const holdTimeMins = (Date.now() - st.ts) / 60000;
-const isConfirmed = holdTimeMins >= 15 || pnlPct >= 15; 
-
-// CHỈ TÍNH TRAILING SL NẾU CÓ SL BAN ĐẦU / HOẶC ĐANG KHÓA TP CŨ
-const hasOriginalSL = Boolean(st.sl || st.currentSL);
-
-// 1. ƯU TIÊN CAO NHẤT: Khi TP động (Shadow TP) đã kích hoạt, khóa SL ngay theo cấu trúc đã định
-if (forceSLtoOldTP && st.tp) {
-    proposedSL = +st.tp; 
-} 
-// 2. CHỈ TRAILING KHI BAN ĐẦU CÓ CÀI SL
-else if (hasOriginalSL) {
-    // REVERSAL / LÃI CỰC LỚN (>= 50%): Siết cực chặt bằng ATR nhỏ hoặc bám đỉnh
-    if ((st.tradeCase?.includes("Rev") && pnlPct >= 30) || pnlPct >= 50) {
-        proposedSL = isLong ? last - (st.atr * 1.0) : last + (st.atr * 1.0);
-    }
-    // LÃI TRUNG BÌNH CAO (25% - 50%) && Đã xác nhận thời gian
-    else if (pnlPct >= 25 && isConfirmed) { 
-        proposedSL = isLong ? last - (st.atr * 1.5) : last + (st.atr * 1.5);
-    }
-    // LÃI KHỞI ĐẦU AN TOÀN (15% - 25%): Bảo toàn vốn, dời SL qua Entry + phí
-    else if (pnlPct >= 15 && isConfirmed) {
-        proposedSL = entry * (1 + (isLong ? 0.003 : -0.003)); 
-    }
-    // GIA ĐOẠN ĐẦU (10% - 15%): Kê SL rộng hơn một chút để chống quét râu nến
-    else if (pnlPct >= 10 && isConfirmed) {
-        proposedSL = isLong ? last - (st.atr * 2.5) : last + (st.atr * 2.5);
-    }
-}             
+                           
 /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
 // Nếu chưa có biến proposedSL thì mới khởi tạo, nếu có rồi thì gán lại về null
 if (typeof proposedSL === 'undefined') {
@@ -2819,7 +2783,7 @@ if (typeof proposedSL === 'undefined') {
 }
 
 const holdTimeMins = (Date.now() - st.ts) / 60000;
-const isConfirmed = holdTimeMins >= 10 || pnlPct >= 10;
+const isConfirmed = holdTimeMins >= 15 || pnlPct >= 15;
 const atrNow = Number(st.atr) > 0 ? Number(st.atr) : Math.abs(last - entry);
 
 // CHỈ TÍNH TRAILING SL NẾU CÓ SL BAN ĐẦU / HOẶC ĐANG KHÓA TP CŨ
