@@ -2536,27 +2536,27 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
 
                 if (
                     !Number.isFinite(progress) ||
-                    progress < 70 ||
+                    progress < 40 ||
                     (positionIsLong
                         ? !(activeTP > entryPrice)
                         : !(activeTP < entryPrice))
                 ) {
                     console.log(
-                        `⏸️ TP ${p.instId} ${posSide}: chưa đạt 80% Entry → TP | ` +
+                        `⏸️ TP ${p.instId} ${posSide}: chưa đạt 40% Entry → TP | ` +
                         `Tiến độ=${Number.isFinite(progress) ? progress.toFixed(2) : 'N/A'}%`
                     );
                     continue;
                 }
 
-                // Chỉ nâng TP khi giá tiếp tục đi thuận chiều ít nhất 0,3 ATR
+                // Chỉ nâng TP khi giá tiếp tục đi thuận chiều ít nhất 0,1 ATR
                 const peakAdvance = positionIsLong
                     ? tpState.peakPrice - tpState.lastAmendPeak
                     : tpState.lastAmendPeak - tpState.peakPrice;
 
-                if (peakAdvance < atrNow * 0.2) {
+                if (peakAdvance < atrNow * 0.1) {
                     console.log(
                         `⏳ TP ${p.instId} ${posSide}: ROI ${pnlPct.toFixed(2)}%, ` +
-                        `chờ giá đi thuận thêm 0,2 ATR | TP=${activeTP}, ` +
+                        `chờ giá đi thuận thêm 0,1 ATR | TP=${activeTP}, ` +
                         `Giá=${marketPrice}, Peak=${tpState.peakPrice}`
                     );
                     continue;
@@ -2593,8 +2593,8 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
                 }
 
                 const needAmend = positionIsLong
-                    ? dynamicTP > activeTP && dynamicTP > marketPrice
-                    : dynamicTP < activeTP && dynamicTP < marketPrice;
+                    ? dynamicTP > activeTP
+                    : dynamicTP < activeTP;
 
                 if (!needAmend) {
                     console.log(
@@ -2706,7 +2706,7 @@ if (Date.now() - globalThis.__tpEngineLastScan >= 5000) {
 }
 
 /* ================= END TP ENGINE ================= */
-     
+   
               
 /* ================= 2. SL TRAILING & BUFFER (ĐÃ ĐỒNG BỘ VỚI TP) ================= */
 // Nếu chưa có biến proposedSL thì mới khởi tạo, nếu có rồi thì gán lại về null
