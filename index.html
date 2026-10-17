@@ -709,6 +709,43 @@ async function scanOnce(){
   status.textContent = '⏳ Đang lấy Tickers...';
 
   try{
+    // KHÔI PHỤC VỊ THẾ ĐANG MỞ TRÊN OKX
+    const positionsRes = await okxApiRequest('/account/positions?instType=SWAP', 'GET');
+
+    if (positionsRes?.code === '0') {
+      const openPositions = (positionsRes.data || [])
+        .filter(p => Math.abs(Number(p.pos || 0)) > 0);
+
+      const savedOrders = JSON.parse(localStorage.getItem('okx_active_orders') || '{}');
+      Object.assign(activeOrders, savedOrders);
+
+      for (const p of openPositions) {
+        const inst = p.instId;
+        const side = p.posSide === 'long' ? 'buy'
+          : p.posSide === 'short' ? 'sell'
+          : Number(p.pos) > 0 ? 'buy' : 'sell';
+
+        positions[inst] = {
+          ...(positions[inst] || {}),
+          inst,
+          base: inst.split('-USDT')[0],
+          last: Number(p.last || p.markPx || p.avgPx),
+          price1h: Number(p.avgPx),
+          delta: 0,
+          atr: Number(p.avgPx) * 0.01,
+          tp: Number(activeOrders[inst]?.tpPrice || 0),
+          sl: Number(activeOrders[inst]?.slPrice || 0),
+          side,
+          status: 'open',
+          hasOrder: true
+        };
+      }
+
+      log(`♻️ Đã tải ${openPositions.length} vị thế đang mở từ OKX.`);
+    } else {
+      throw new Error('Không thể tải vị thế đang mở từ OKX');
+    }
+
     // 1. CHỈ 1 REQUEST REST
     const j = await safeFetch(OKX_TICKERS);
 
