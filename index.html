@@ -971,73 +971,97 @@ for(const c of candidates){
     }
 
     
+    
     // 8. AUTO TRADE CHỈ CHO 10 SLOT
     if(isTrading){
 
       const tradePromises = [];
 
-      for(const inst of topPump){
+      // Đếm vị thế đang mở thực tế trên OKX, không đếm activeOrders cũ
+      const slotRes = await okxApiRequest('/account/positions?instType=SWAP', 'GET');
 
-        if(
-          Object.keys(activeOrders).length + tradePromises.length < 10 &&
-          positions[inst]?.status === 'open' &&
-          !positions[inst]?.hasOrder &&
-          !activeOrders[inst]
-        ){
-          tradePromises.push(
-            placeOrder(
-              inst,
-              'buy',
-              positions[inst].last,
-              positions[inst].sl,
-              positions[inst].tp
-            ).then(order => {
+      if(slotRes?.code !== '0'){
+        log('❌ Không thể xác minh vị thế OKX, tạm bỏ qua vòng vào lệnh.');
+      } else {
+        let openSlotCount = (slotRes.data || []).filter(
+          p => Math.abs(Number(p.pos || 0)) > 0
+        ).length;
 
-              if(order){
-                positions[inst].hasOrder = true;
-              }
+        for(const inst of topPump){
 
-            }).catch(err => {
-              log(
-                `Lỗi đặt lệnh buy ${inst}: ${err.message}`
-              );
-            })
-          );
+          if(
+            openSlotCount < 10 &&
+            positions[inst]?.status === 'open' &&
+            !positions[inst]?.hasOrder &&
+            !activeOrders[inst]
+          ){
+            // Giữ slot trước khi gọi API để tránh hai vòng chiếm cùng slot
+            openSlotCount++;
+
+            tradePromises.push(
+              placeOrder(
+                inst,
+                'buy',
+                positions[inst].last,
+                positions[inst].sl,
+                positions[inst].tp
+              ).then(order => {
+
+                if(order){
+                  positions[inst].hasOrder = true;
+                } else {
+                  openSlotCount--;
+                }
+
+              }).catch(err => {
+                openSlotCount--;
+                log(
+                  `Lỗi đặt lệnh buy ${inst}: ${err.message}`
+                );
+              })
+            );
+          }
         }
-      }
 
-      for(const inst of topDump){
+        for(const inst of topDump){
 
-        if(
-          Object.keys(activeOrders).length + tradePromises.length < 10 &&
-          positions[inst]?.status === 'open' &&
-          !positions[inst]?.hasOrder &&
-          !activeOrders[inst]
-        ){
-          tradePromises.push(
-            placeOrder(
-              inst,
-              'sell',
-              positions[inst].last,
-              positions[inst].sl,
-              positions[inst].tp
-            ).then(order => {
+          if(
+            openSlotCount < 10 &&
+            positions[inst]?.status === 'open' &&
+            !positions[inst]?.hasOrder &&
+            !activeOrders[inst]
+          ){
+            openSlotCount++;
 
-              if(order){
-                positions[inst].hasOrder = true;
-              }
+            tradePromises.push(
+              placeOrder(
+                inst,
+                'sell',
+                positions[inst].last,
+                positions[inst].sl,
+                positions[inst].tp
+              ).then(order => {
 
-            }).catch(err => {
-              log(
-                `Lỗi đặt lệnh sell ${inst}: ${err.message}`
-              );
-            })
-          );
+                if(order){
+                  positions[inst].hasOrder = true;
+                } else {
+                  openSlotCount--;
+                }
+
+              }).catch(err => {
+                openSlotCount--;
+                log(
+                  `Lỗi đặt lệnh sell ${inst}: ${err.message}`
+                );
+              })
+            );
+          }
         }
-      }
 
-      await Promise.all(tradePromises);
+        await Promise.all(tradePromises);
+      }
     }
+
 
 
     // 9. HIỂN THỊ
