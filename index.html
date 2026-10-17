@@ -1106,20 +1106,29 @@ function ensureWS(){
             }
 
             if(hit){
+              const isRealOrder = Boolean(activeOrders[inst] || pos.hasOrder);
 
-              pos.status = hit;
-              pos.hitTime = Date.now();
-
-              log(
-                `${pos.base} hit ${hit} ` +
-                `(${isPump ? 'Pump' : 'Dump'}) @ ${fmt(pos.last)}`
-              );
-
-              if(activeOrders[inst]){
-                closeOrder(inst, hit);
+              if(isRealOrder) {
+                // TH1: Đã vào lệnh thật -> Chờ xác thực server OKX
+                pos.status = hit;
+                pos.hitTime = Date.now();
+                log(
+                  `⏳ ${pos.base} chạm mốc ${hit} (Lệnh thật), đang chờ xác thực OKX...`
+                );
+                closeOrder(inst, hit).then(closedOrder => {
+                  if(closedOrder) {
+                    handleHit(inst, isPump, hit);
+                  }
+                });
+              } else {
+                // TH2: Chưa vào lệnh (Chỉ là coin trên bảng) -> Khóa trạng thái, báo log và thay thế ngay
+                pos.status = hit;
+                pos.hitTime = Date.now();
+                log(
+                  `${pos.base} hit ${hit} (${isPump ? 'Pump' : 'Dump'}) @ ${fmt(pos.last)}`
+                );
+                handleHit(inst, isPump, hit);
               }
-
-              handleHit(inst, isPump, hit);
             }
           }
         });
