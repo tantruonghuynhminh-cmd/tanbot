@@ -1286,18 +1286,22 @@ async function handleHit(inst, wasPump, reason){
   let replacementCandidate = null;
   
   if(wasPump){
-    replacementCandidate = pool.find(c => 
-      c.delta > 0 && 
-      !topPump.includes(c.inst) && 
-      (!positions[c.inst] || positions[c.inst].status === 'open')
-    );
-  } else {
-    replacementCandidate = pool.find(c => 
-      c.delta < 0 && 
-      !topDump.includes(c.inst) && 
-      (!positions[c.inst] || positions[c.inst].status === 'open')
-    );
-  }
+  replacementCandidate = pool.find(c =>
+    c.delta > 0 &&
+    !topPump.includes(c.inst) &&
+    !topDump.includes(c.inst) &&
+    (!positions[c.inst] || positions[c.inst].status === 'open') &&
+    !activeOrders[c.inst]
+  );
+} else {
+  replacementCandidate = pool.find(c =>
+    c.delta < 0 &&
+    !topDump.includes(c.inst) &&
+    !topPump.includes(c.inst) &&
+    (!positions[c.inst] || positions[c.inst].status === 'open') &&
+    !activeOrders[c.inst]
+  );
+}
 
   if(replacementCandidate){
     const {tp, sl} = calcTP_SL(replacementCandidate.last, replacementCandidate.atr, replacementCandidate.delta > 0);
