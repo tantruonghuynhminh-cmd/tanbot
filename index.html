@@ -1185,10 +1185,12 @@ function ensureWS(){
   );
 
   if(activeOrders[inst]){
-    closeOrder(inst, hit);
-  }
-
-              handleHit(inst, isPump, hit);
+  closeOrder(inst, hit).then(closedOrder => {
+    if(closedOrder) {
+      handleHit(inst, isPump, hit);
+    }
+  });
+}
             }
           }
         });
